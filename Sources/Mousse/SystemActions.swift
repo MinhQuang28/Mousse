@@ -38,6 +38,30 @@ enum SystemActions {
         DispatchQueue.main.async { send?(name as CFString, 0) }
     }
 
+    // MARK: - Exposé overlay detection
+
+    /// Whether Mission Control / App Exposé is currently showing, or nil when undetectable.
+    ///
+    /// The overlay's owner moved between releases: on macOS 26 the Dock renders it (one
+    /// full-screen window at layer 18 — verified live on 26.6.2, where it appears on open and
+    /// vanishes on close; Stage Manager's WindowManager thumbnails sit at layer 0 and don't
+    /// collide, the Dock bar itself at 20, its context menus at 101). On macOS 27+ it moved to
+    /// WindowManager at layers 1–19 (empirical, per mac-mouse-fix PR #1950). Pre-26 there's no
+    /// verified signature — nil, so callers keep their legacy toggle behavior. Reading owner
+    /// name + layer needs no Screen Recording permission. One window-list snapshot per call —
+    /// callers should invoke this per gesture trigger, not per event.
+    static func exposeOverlayIsOpen() -> Bool? {
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        guard major >= 26 else { return nil }
+        let owner = major >= 27 ? "WindowManager" : "Dock"
+        guard let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID)
+            as? [[String: Any]] else { return nil }
+        return windows.contains { w in
+            w[kCGWindowOwnerName as String] as? String == owner
+                && (1...19).contains(w[kCGWindowLayer as String] as? Int ?? 0)
+        }
+    }
+
     // MARK: - Symbolic hotkeys (switch Spaces)
 
     /// Switch to the Space on the left / right.
