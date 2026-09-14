@@ -92,6 +92,7 @@ final class EventTapEngine {
     private let magnifier = MagnifySynthesizer()
     private let spaceDrag = SpaceDragGesture()
     private let cursorApp = CursorAppResolver() // tap-thread only, like the animator
+    private let screenSpans = ScreenSpanResolver() // tap-thread only; flushed with `cursorApp`
 
     /// Start the tap thread (idempotent). Apply `config`.
     func start(config: AppConfig) {
@@ -336,7 +337,10 @@ final class EventTapEngine {
         lock.unlock()
 
         if dragCancel { spaceDrag.cancel() } // tap thread — safe to touch the gesture's state
-        if cursorFlush { cursorApp.invalidate() } // tap thread — the resolver's cache lives there
+        if cursorFlush { // tap thread — both resolvers' caches live there
+            cursorApp.invalidate()
+            screenSpans.invalidate()
+        }
 
         // During capture, let button downs/drags reach the Settings UI untouched. Ups are NOT
         // exempted: they go through the pairing below (an up whose down was swallowed must be
@@ -503,16 +507,16 @@ final class EventTapEngine {
             // display under the cursor so big screens fling proportionally farther.
             var profile = ScrollProfile.forSmoothness(smoothness)
             var forceGlide = false
+            let span = screenSpans.span(at: event.location, vertical: lineV != 0)
             if modQuick {
-                profile = .quick(screenSpan: screenSpan(at: event.location, vertical: lineV != 0))
+                profile = .quick(screenSpan: span)
                 forceGlide = true
             } else if modPrecise {
                 profile = .precise
                 forceGlide = true
             }
             let baseline = lineV != 0 ? 1080.0 : 1920.0
-            let sizeFactor = modQuick ? 1.0
-                : screenSpan(at: event.location, vertical: lineV != 0) / baseline
+            let sizeFactor = modQuick ? 1.0 : span / baseline
             let sens = profile.sensitivity(slider: speed, screenSizeFactor: sizeFactor)
 
             // Notched mouse: Smooth and Smooth-step both drive the animator (momentum vs crisp N-line
@@ -564,20 +568,6 @@ private let scrollPhaseField = CGEventField(rawValue: 99)!          // kCGScroll
 private let scrollMomentumPhaseField = CGEventField(rawValue: 123)! // kCGScrollWheelEventMomentumPhase
 
 extension EventTapEngine {
-    /// Scale a continuous (high-res) mouse's deltas by the Scroll-speed slider and flip them for
-    /// reverse, in place. Neutral speed (0.5, the slider default) maps to gain 1.0 so the mouse keeps
-    /// its native feel until the user actually moves the slider.
-    /// Pixel span of the display under `point` — feeds screen-size sensitivity scaling and the
-    /// quick-scroll window size. Falls back to the 1080p baseline when the lookup misses.
-    fileprivate func screenSpan(at point: CGPoint, vertical: Bool) -> Double {
-        var display: CGDirectDisplayID = 0
-        var count: UInt32 = 0
-        guard CGGetDisplaysWithPoint(point, 1, &display, &count) == .success, count > 0 else {
-            return vertical ? 1080 : 1920
-        }
-        return Double(vertical ? CGDisplayPixelsHigh(display) : CGDisplayPixelsWide(display))
-    }
-
     /// Post a fresh continuous (pixel) event with the slider gain / reverse sign applied and the
     /// axes optionally swapped — for the hi-res path whenever the original can't pass through
     /// unmodified (in-place edits on a passthrough don't stick).

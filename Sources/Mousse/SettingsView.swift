@@ -62,16 +62,25 @@ struct SettingsView: View {
                 }
                 Text("Snappy = direct with a minimal tail (\"Regular\"). Balanced = smooth but responsive. Floaty = long trackpad-like coast ( \"High\").")
                     .font(.caption).foregroundStyle(.secondary)
-                VStack(alignment: .leading) {
-                    Text("Scroll speed: \(String(format: "%.2f×", store.config.scrollSpeed))")
-                    // Floor of 0.05 (not 0.2): high-res "continuous" mice natively scroll fast, and
-                    // their gain is speed/0.5 — a 0.2 floor still meant 40% of native, too fast for
-                    // slow scrollers. 0.05 → 10% of native. Finer step for control at the low end.
-                    Slider(value: $store.config.scrollSpeed, in: 0.05...1.5, step: 0.05) {
-                        Text("Scroll speed")
-                    } minimumValueLabel: { Text("Slow").font(.caption) }
-                      maximumValueLabel: { Text("Fast").font(.caption) }
-                }
+            }
+            // Shown in EVERY mode: the slider scales high-resolution ("continuous") mice in
+            // Standard and Smooth-step too, so hiding it there left a gain the user had set in
+            // Smooth silently applied with no control to change it.
+            VStack(alignment: .leading) {
+                Text("Scroll speed: \(String(format: "%.2f×", store.config.scrollSpeed))")
+                // Floor of 0.05 (not 0.2): high-res "continuous" mice natively scroll fast, and
+                // their gain is speed/0.5 — a 0.2 floor still meant 40% of native, too fast for
+                // slow scrollers. 0.05 → 10% of native. Finer step for control at the low end.
+                Slider(value: $store.config.scrollSpeed, in: 0.05...1.5, step: 0.05) {
+                    Text("Scroll speed")
+                } minimumValueLabel: { Text("Slow").font(.caption) }
+                  maximumValueLabel: { Text("Fast").font(.caption) }
+                Text(store.config.scrollMode == .smooth
+                     ? "Wheel sensitivity per notch; also scales high-resolution (continuous) mice."
+                     : "Scales high-resolution (continuous) mice only — a notched wheel keeps its native step in this mode (except with ⌥ or ⌃ held).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if store.config.scrollMode == .smooth {
                 Toggle("Scroll acceleration", isOn: $store.config.scrollAcceleration)
             }
             if store.config.scrollMode == .smoothStep {

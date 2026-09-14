@@ -12,7 +12,8 @@ or any system configuration changes.
 - **Three styles** — _Standard_ (instant wheel, no animation), _Smooth_ (trackpad-style eased
   momentum), and _Smooth-step_ (Windows-browser feel: each notch eases a fixed number of lines
   with no coast).
-- **Adjustable speed** and **lines-per-notch** (Smooth-step).
+- **Adjustable speed** — wheel sensitivity in Smooth; in every style it also scales
+  high-resolution (continuous) mice — and **lines-per-notch** (Smooth-step).
 - **Reverse direction** independent of the system setting.
 - **Smooth high-res mice** — opt-in smoothing for high-resolution mice that have no hardware
   flywheel (e.g. Keychron M6) and otherwise scroll choppily. Leave it off for free-spin mice

@@ -416,18 +416,42 @@ struct HybridPlan {
         } else {
             // Even attaching at t=0 over-coasts (huge incoming speed, small distance): drag-only
             // plan that covers exactly `distance`. The incoming speed is dropped, like .
-            let dragSeg = DragSegment(distance: distance, a: dragCoefficient,
-                                         b: dragExponent, stopSpeed: stopSpeed)
+            let coast = HybridPlan.coast(distance: distance, profile: profile)
             bezier = nil
             transitionTime = 0
             transitionDistance = 0
-            drag = dragSeg
-            duration = dragSeg.duration
-            // Guarded like the bezier branch above: a degenerate (near-zero) coast would make this
-            // infinite, and `distance(at:)` then evaluates 0 × ∞ = NaN, which propagates into the
-            // animator's pixel accumulator and traps the Int32 conversion in `step`.
-            scale = dragSeg.distance > 0 ? distance / dragSeg.distance : 1
+            drag = coast.drag
+            duration = coast.drag.duration
+            scale = coast.scale
         }
+    }
+
+    /// Pure coast: a drag-only plan covering exactly `distance`, starting at the one speed whose
+    /// decay to `stopSpeed` spans it (so the start speed is never higher than any glide that
+    /// would over-coast the distance). The full init falls back to this when the bezier can't
+    /// attach; the ceiling tail uses it directly — unlike the full init, the start speed is
+    /// independent of speed smoothing, so a smoothing-0 profile (Snappy/Precise/Quick) gets the
+    /// same continuous hand-off.
+    init(coastDistance distance: Double, profile: ScrollProfile) {
+        let coast = HybridPlan.coast(distance: distance, profile: profile)
+        total = distance
+        bezier = nil
+        bezierDuration = profile.baseMsPerStep
+        transitionTime = 0
+        transitionDistance = 0
+        drag = coast.drag
+        duration = coast.drag.duration
+        scale = coast.scale
+    }
+
+    /// Drag segment + normalization for a drag-only plan (shared by both inits). The scale is
+    /// guarded: a degenerate (near-zero) coast would make it infinite, and `distance(at:)` then
+    /// evaluates 0 × ∞ = NaN, which propagates into the animator's pixel accumulator and traps
+    /// the Int32 conversion in `step`.
+    private static func coast(distance: Double, profile: ScrollProfile) -> (drag: DragSegment, scale: Double) {
+        let drag = DragSegment(distance: distance, a: profile.dragCoefficient,
+                               b: profile.dragExponent, stopSpeed: profile.stopSpeed)
+        return (drag, drag.distance > 0 ? distance / drag.distance : 1)
     }
 
     /// Distance covered `t` seconds in (monotonic, distance(duration) == total).

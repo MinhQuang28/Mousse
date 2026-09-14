@@ -473,3 +473,162 @@ final class ScrollModelTests: XCTestCase {
         XCTAssertEqual(swipes(maxInterval: 0.375, minTickSpeed: 16), 0)
     }
 }
+
+/// The speed-ceiling tail (`ScrollAnimator.ceilingTail`): a fast-scroll plan the output ceiling
+/// throttled must end with the profile's own deceleration, never a flat run that stops dead.
+final class CeilingTailTests: XCTestCase {
+
+    private let ceiling = ScrollAnimator.maxOutputSpeed
+
+    /// Distance a coast from the ceiling covers — the backlog size at which the tail attaches.
+    private func coast(_ p: ScrollProfile) -> Double {
+        DragSegment(initialSpeed: ceiling, a: p.dragCoefficient, b: p.dragExponent,
+                    stopSpeed: p.stopSpeed)!.distance
+    }
+
+    func testNothingLeftIsNil() {
+        XCTAssertNil(ScrollAnimator.ceilingTail(backlog: 0.2, profile: .balanced))
+        XCTAssertNil(ScrollAnimator.ceilingTail(backlog: 0, profile: .balanced))
+    }
+
+    /// A backlog the coast can't yet cover keeps draining at the ceiling (the tail attaches later).
+    func testOversizedBacklogKeepsDraining() {
+        for p in [ScrollProfile.snappy, .balanced, .floaty] {
+            XCTAssertNil(ScrollAnimator.ceilingTail(backlog: coast(p) * 1.5, profile: p))
+        }
+    }
+
+    /// Once the backlog fits the coast the tail starts at (about) the ceiling speed, decays
+    /// monotonically to the stop speed and covers exactly the backlog — no wall at the end.
+    func testTailDeceleratesFromCeilingToStop() throws {
+        for p in [ScrollProfile.snappy, .balanced, .floaty] {
+            // Exactly at the attach point the tail starts AT the ceiling — no speed step.
+            let exact = try XCTUnwrap(ScrollAnimator.ceilingTail(backlog: coast(p), profile: p))
+            XCTAssertEqual(exact.speed(at: 0), ceiling, accuracy: ceiling * 0.01,
+                           "hand-off must be continuous with the ceiling frames")
+            // The animator checks once per frame, so the attach lands within a frame's worth of
+            // pixels (≤ 200 px at 60 Hz) below the coast — still near the ceiling.
+            let backlog = coast(p) - 200
+            let tail = try XCTUnwrap(ScrollAnimator.ceilingTail(backlog: backlog, profile: p))
+            XCTAssertEqual(tail.total, backlog)
+            XCTAssertEqual(tail.distance(at: tail.duration), backlog, accuracy: 1e-6)
+            XCTAssertLessThanOrEqual(tail.speed(at: 0), ceiling * 1.01, "must not exceed the ceiling")
+            XCTAssertGreaterThan(tail.speed(at: 0), ceiling * 0.5, "must take over near the ceiling speed")
+            XCTAssertEqual(tail.speed(at: tail.duration - 1e-6), p.stopSpeed, accuracy: p.stopSpeed * 0.2)
+            var prev = tail.speed(at: 0)
+            for i in 1...50 {
+                let v = tail.speed(at: tail.duration * Double(i) / 50)
+                XCTAssertLessThanOrEqual(v, prev + 1e-6, "tail speed must never rise (\(p.stopSpeed))")
+                prev = v
+            }
+        }
+    }
+
+    /// Backlog exactly at the guard threshold (0.5) must create a tail; just below must return nil.
+    func testBacklogThresholdEdgeCases() {
+        let profile = ScrollProfile.balanced
+        // Just below threshold: nil
+        XCTAssertNil(ScrollAnimator.ceilingTail(backlog: 0.49999, profile: profile),
+                     "backlog just below 0.5 must return nil")
+        // Exactly at threshold: must create a tail (if it fits the coast)
+        let exact = ScrollAnimator.ceilingTail(backlog: 0.5, profile: profile)
+        if let tail = exact {
+            XCTAssertEqual(tail.total, 0.5, accuracy: 1e-6)
+            XCTAssertGreaterThan(tail.duration, 0)
+        }
+        // Just above threshold: definitely a tail
+        let aboveThreshold = ScrollAnimator.ceilingTail(backlog: 0.50001, profile: profile)
+        XCTAssertNotNil(aboveThreshold, "backlog just above 0.5 must create a tail")
+    }
+
+    /// Modifier profiles (precise/quick) must also produce valid tails when backlog fits.
+    func testModifierProfilesProduceTails() {
+        // Test precise modifier profile with a reasonable backlog
+        let preciseProfile = ScrollProfile.precise
+        let coastPrecise = DragSegment(initialSpeed: ceiling, a: preciseProfile.dragCoefficient,
+                                      b: preciseProfile.dragExponent, stopSpeed: preciseProfile.stopSpeed)?.distance ?? 0
+        let backlogPrecise = min(100.0, coastPrecise * 0.5) // well within coast for precise
+        let preciseT = ScrollAnimator.ceilingTail(backlog: backlogPrecise, profile: preciseProfile)
+        XCTAssertNotNil(preciseT, "precise profile should produce a tail for reasonable backlog")
+        if let tail = preciseT {
+            XCTAssertEqual(tail.total, backlogPrecise, accuracy: 1e-6)
+            // Tail starts near ceiling but can be lower for small backlogs
+            XCTAssertLessThanOrEqual(tail.speed(at: 0), ceiling * 1.01)
+            XCTAssertGreaterThan(tail.speed(at: 0), 0)
+            // Verify deceleration
+            var prev = tail.speed(at: 0)
+            for i in 1...20 {
+                let v = tail.speed(at: tail.duration * Double(i) / 20)
+                XCTAssertLessThanOrEqual(v, prev + 1e-6, "precise profile tail must decelerate")
+                prev = v
+            }
+        }
+
+        // Test quick modifier profile with various screen spans
+        let quickProfile = ScrollProfile.quick(screenSpan: 1080)
+        let coastQuick = DragSegment(initialSpeed: ceiling, a: quickProfile.dragCoefficient,
+                                    b: quickProfile.dragExponent, stopSpeed: quickProfile.stopSpeed)?.distance ?? 0
+        let backlogQuick = min(500.0, coastQuick * 0.5) // well within the coast
+        let quickTail = ScrollAnimator.ceilingTail(backlog: backlogQuick, profile: quickProfile)
+        XCTAssertNotNil(quickTail, "quick profile should produce a tail for reasonable backlog")
+        if let tail = quickTail {
+            XCTAssertEqual(tail.total, backlogQuick, accuracy: 1e-6)
+            // Verify deceleration property applies to quick too
+            var prev = tail.speed(at: 0)
+            for i in 1...20 {
+                let v = tail.speed(at: tail.duration * Double(i) / 20)
+                XCTAssertLessThanOrEqual(v, prev + 1e-6, "quick profile tail must decelerate")
+                prev = v
+            }
+        }
+    }
+
+    /// End-to-end at frame granularity, exactly as `step` drives a plan: `planRate` compression
+    /// into `maxDuration`, the 50 ms plan-time clamp, the per-frame ceiling, and the tail
+    /// re-plan on a throttled frame once the backlog fits the coast. Every profile flings the
+    /// capped distance (ceiling × maxDuration — what every hard fling clamps to; Floaty/Quick
+    /// compress there, which used to pin emission at the ceiling until a dead stop). After the
+    /// ceiling plateau the speed must only fall, never by more than the profile's own drag
+    /// deceleration (no step down into a slow tail), and end slow.
+    func testCappedFlingEndsWithProfileDeceleration() {
+        let cap = ceiling * ScrollTuning.maxDuration
+        let profiles: [(String, ScrollProfile)] = [("snappy", .snappy), ("balanced", .balanced),
+                                                   ("floaty", .floaty), ("precise", .precise),
+                                                   ("quick", .quick(screenSpan: 1080))]
+        for (name, profile) in profiles {
+            for v0 in [0.0, ceiling] {
+                let fps = 120.0, dt = 1 / fps, maxFrame = ceiling * dt
+                var plan: HybridPlan? = HybridPlan(distance: cap, initialSpeed: v0, profile: profile)
+                var rate = max(1.0, plan!.duration / ScrollTuning.maxDuration)
+                var start = 0.0, now = 0.0, emitted = 0.0, prev = 0.0
+                var speeds: [Double] = []
+                while let p = plan, speeds.count < 5000 {
+                    now += dt
+                    let planTime = min((now - start) * rate, prev + 0.05 * rate, p.duration)
+                    let d = min(max(p.distance(at: planTime) - emitted, 0), maxFrame)
+                    emitted += d; prev = planTime
+                    speeds.append(d / dt)
+                    let backlog = p.total - emitted
+                    if planTime >= p.duration, backlog < 0.5 { plan = nil }
+                    else if d == maxFrame, let tail = ScrollAnimator.ceilingTail(backlog: backlog, profile: profile) {
+                        plan = tail; start = now; prev = 0; emitted = 0; rate = 1
+                    }
+                }
+                let label = "\(name) v0=\(v0)"
+                XCTAssertNil(plan, "\(label): fling must finish")
+                XCTAssertTrue(speeds.contains { $0 >= ceiling * 0.99 }, "\(label): must hit the ceiling")
+                XCTAssertLessThan(speeds.last!, ceiling * 0.05, "\(label): must end slow, not at the ceiling")
+                // Steepest deceleration the profile's own drag produces just below the ceiling.
+                let drag = DragSegment(initialSpeed: ceiling, a: profile.dragCoefficient,
+                                       b: profile.dragExponent, stopSpeed: profile.stopSpeed)!
+                let naturalDrop = (ceiling - drag.speed(at: dt)) * 1.5 + 60
+                let plateauEnd = speeds.lastIndex { $0 >= ceiling * 0.99 }!
+                for i in (plateauEnd + 1)..<speeds.count {
+                    XCTAssertLessThanOrEqual(speeds[i], speeds[i - 1] + 1e-6, "\(label): tail must decelerate")
+                    XCTAssertLessThanOrEqual(speeds[i - 1] - speeds[i], naturalDrop,
+                                             "\(label): speed step at frame \(i) exceeds the profile's drag")
+                }
+            }
+        }
+    }
+}

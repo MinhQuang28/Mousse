@@ -95,13 +95,31 @@ final class ScrollAnimator: NSObject {
     // ticks one axis per event; an axis or direction change starts a fresh plan from rest).
     private var tickAnalyzer = TickAnalyzer()
     private var plan: HybridPlan?
-    private var planStart = 0.0      // when the CURRENT plan started (reset on every notch)
+    private var planStart = 0.0      // plan clock origin (reset on every notch AND on a ceiling re-plan)
+    private var lastTickTime = 0.0   // last wheel notch — drives momentum labeling and the brake
     private var planRate = 1.0       // >1 compresses a fast-scroll plan into `maxDuration` wall time
     private var planPrevTime = 0.0   // plan-time of the previous frame (momentum labeling needs it)
     private var planEmitted = 0.0    // px of the plan already posted (absolute)
     private var planAxisIsV = true
     private var planSign = 1.0
-    private let planMaxDistance = 100_000.0 // px cap (fast scroll is exponential)
+    private var planProfile = ScrollProfile.balanced // curve of the current plan (for the ceiling tail)
+    /// Distance cap for one plan. Fast scroll is exponential, so without a cap a fling could
+    /// queue 100 000 px — at the output ceiling that is 8 s of scrolling the user can only stop
+    /// with a brake notch. Ceiling × maxDuration bounds any single fling to ~1.5 s at the
+    /// ceiling plus the profile's coast from it (≈0.3 s Snappy … ≈1.2 s Floaty, see
+    /// `ceilingTail`); continued swiping keeps topping the backlog up, so sustained flings fly.
+    private static let planMaxDistance = maxOutputSpeed * ScrollTuning.maxDuration
+
+    /// Output speed of the current plan (caller holds `lock`) — what the page actually moves
+    /// at, for seeding the next notch and the brake. The plan's own curve is wrong in two
+    /// throttled cases: once its clock has run out with backlog left it reads 0 while the page
+    /// moves at the ceiling (a same-direction notch would then re-plan from rest — a hitch
+    /// mid-fling — and a reversed notch would flip instead of braking, in the fastest phase of
+    /// a fling); and a compressed plan claims a speed the output never reaches.
+    private func planSpeedLocked(_ p: HybridPlan, at planTime: Double) -> Double {
+        if planTime >= p.duration, p.total - planEmitted >= 0.5 { return ScrollAnimator.maxOutputSpeed }
+        return min(p.speed(at: planTime) * planRate, ScrollAnimator.maxOutputSpeed)
+    }
 
     // Hi-res pixel path (addPixels) — free-spin safety.
     private var pxInputSpeed = 0.0     // smoothed incoming px/s of the raw device stream
@@ -129,7 +147,23 @@ final class ScrollAnimator: NSObject {
     // than this; the excess drains later (plan/spring keep the backlog) or is dropped at the
     // backlog clamps. ~6 screenfuls per second: flings through long pages while staying below
     // the rates that blank-render in heavy apps (6000 felt too slow on long documents).
-    private static let maxOutputSpeed = 12_000.0 // px/s
+    static let maxOutputSpeed = 12_000.0 // px/s
+
+    /// Follow-up plan for a ceiling-capped backlog (pure, unit-tested). A plan whose clock ran
+    /// out with distance still unposted was throttled by `maxOutputSpeed`; left alone it drains
+    /// flat at the ceiling and then stops dead. Once the backlog is no larger than the coast a
+    /// drag from the ceiling speed covers, hand the remainder to that coast so the fling ends
+    /// with the profile's natural deceleration instead of a wall. `nil` = keep draining at the
+    /// ceiling (the tail attaches later) or nothing left to plan.
+    static func ceilingTail(backlog: Double, profile: ScrollProfile) -> HybridPlan? {
+        guard backlog >= 0.5 else { return nil }
+        let coast = DragSegment(initialSpeed: maxOutputSpeed, a: profile.dragCoefficient,
+                                b: profile.dragExponent, stopSpeed: profile.stopSpeed)?.distance ?? 0
+        guard backlog <= coast else { return nil }
+        // A pure coast: starts at the speed whose decay covers exactly `backlog` (≤ the ceiling,
+        // since backlog ≤ coast) — continuous with the ceiling-rate frames that preceded it.
+        return HybridPlan(coastDistance: backlog, profile: profile)
+    }
 
     /// Gain for hi-res pixel input. The slider's perceptual curve (0.5 → 1.0 = native, capped ×3)
     /// applies fully to slow/deliberate scrolling; above a knee, the EXCESS input speed passes at
@@ -212,8 +246,8 @@ final class ScrollAnimator: NSObject {
         // (gaps < the tick window) are not brakes — they flip direction immediately as before.
         if let p = plan, planAxisIsV == axisIsV, planSign != sign {
             let planTime = min((now - planStart) * planRate, p.duration)
-            if ScrollAnimator.shouldBrakeOnReversal(silence: now - planStart,
-                                                    speed: p.speed(at: planTime) * planRate) {
+            if ScrollAnimator.shouldBrakeOnReversal(silence: now - lastTickTime,
+                                                    speed: planSpeedLocked(p, at: planTime)) {
                 clearPlanLocked()
                 lastMotionTime = now // hold the stream open; the finish path closes it cleanly
                 lock.unlock()
@@ -244,17 +278,19 @@ final class ScrollAnimator: NSObject {
         if let p = plan, planAxisIsV == axisIsV, planSign == sign {
             let planTime = min((now - planStart) * planRate, p.duration)
             if !analysis.isSequenceStart { leftover = max(p.total - planEmitted, 0) }
-            v0 = p.speed(at: planTime) * planRate
+            v0 = planSpeedLocked(p, at: planTime)
         }
-        let p = HybridPlan(distance: min(leftover + px, planMaxDistance), initialSpeed: v0,
-                              profile: profile)
+        let p = HybridPlan(distance: min(leftover + px, ScrollAnimator.planMaxDistance),
+                           initialSpeed: v0, profile: profile)
         plan = p
         planStart = now
+        lastTickTime = now
         planPrevTime = 0
         planEmitted = 0
         planRate = max(1.0, p.duration / ScrollTuning.maxDuration)
         planAxisIsV = axisIsV
         planSign = sign
+        planProfile = profile
         if analysis.isSequenceStart { carryV = 0; carryH = 0 }
         lastMotionTime = now
         let action = wakeActionLocked(now: now)
@@ -621,12 +657,29 @@ final class ScrollAnimator: NSObject {
             // wheel has been quiet past the tick window (each notch resets `planStart`) and only
             // for frames that lie ENTIRELY inside the drag portion — so steady ticking stays one
             // gesture stream instead of churning ended→momentum→began between notches.
-            wantMomentum = (now - planStart) >= ScrollTuning.tickIntervalMax
+            wantMomentum = (now - lastTickTime) >= ScrollTuning.tickIntervalMax
                 && p.inDragPhase(at: planPrevTime) && p.inDragPhase(at: planTime)
             planPrevTime = planTime
-            // Drained (fully emitted, not merely past the end time — the ceiling may still be
-            // draining a capped backlog); the finish path closes the stream.
-            if planTime >= p.duration, p.total - planEmitted < 0.5 { clearPlanLocked() }
+            let backlog = p.total - planEmitted
+            if planTime >= p.duration, backlog < 0.5 {
+                clearPlanLocked() // drained; the finish path closes the stream
+            } else if d == maxFrameD,
+                      let tail = ScrollAnimator.ceilingTail(backlog: backlog, profile: planProfile) {
+                // This frame ran AT the ceiling (throttled — see `ceilingTail`) and the backlog
+                // now fits a coast from the ceiling speed: re-plan it so the fling decelerates
+                // to a stop instead of ending flat. Checked on every throttled frame, not only
+                // when the clock runs out: a long plan (Floaty) keeps its clock running while
+                // the ceiling eats its own deceleration, and by the time it ended the backlog
+                // would be a sliver — a tail from a sliver starts slow, i.e. a speed step. The
+                // plan clock restarts; `lastTickTime` does not, so momentum labeling and the
+                // brake still see the real wheel silence.
+                plan = tail
+                planStart = now
+                planPrevTime = 0
+                planEmitted = 0
+                planRate = 1
+            }
+            // else: a throttled backlog too big for the coast keeps draining at the ceiling.
         } else {
             // Hi-res free-spin: user grabbed the wheel (input stopped at speed) → stop with them.
             if phaselessStream, now - pxLastInputTime > ScrollAnimator.pixelInputGrace {
