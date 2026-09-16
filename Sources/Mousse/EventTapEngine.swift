@@ -18,6 +18,22 @@ final class EventTapEngine {
     private var thread: Thread?
     private var watchdog: Timer?
     private var hidManager: IOHIDManager?
+    // Main-thread only (set in `start` / the wake handler), not under `lock`.
+    private var observersInstalled = false
+    /// Multi-display wake fires several notifications back-to-back; coalesce into one rebuild.
+    private var wakeDebounceWorkItem: DispatchWorkItem?
+    private static let wakeDebounceInterval = 0.15
+
+    // Tap lifecycle (all under `lock`). `tapEnable` on a tap that WindowServer has silently
+    // dropped (display wake is the classic case) can report success while every click stays
+    // dead — the only reliable fix is to tear the tap down and create a fresh one. The tap thread
+    // owns its run loop; the main thread asks for a rebuild by stopping that loop.
+    private var eventTapRunLoop: CFRunLoop?
+    private var tapRebuildPending = false
+    private var tapCreationFailed = false     // trusted but `tapCreate` still returned nil
+    private var nextTapCreationAttemptAt = Date.distantPast
+    private var eventTapRecoveryCount = 0
+    private var lastEventTapRecoveryAt: Date?
 
     // Snapshot read by the tap callback thread; guarded by `lock`. Unfair lock (not NSLock):
     // it's taken on every mouse event — up to 1000 Hz on a high-polling mouse — and os_unfair_lock
@@ -97,12 +113,9 @@ final class EventTapEngine {
     /// Start the tap thread (idempotent). Apply `config`.
     func start(config: AppConfig) {
         reload(config)
-        guard thread == nil else { return }
-        let t = Thread { [weak self] in self?.threadMain() }
-        t.name = "com.mousse.event-tap"
-        t.qualityOfService = .userInteractive
-        thread = t
-        t.start()
+        startTapThreadIfNeeded()
+        guard !observersInstalled else { return }
+        observersInstalled = true
 
         // macOS often disables the tap across sleep/wake WITHOUT delivering a
         // tapDisabledByTimeout event to our callback — so the callback's re-enable never fires
@@ -125,6 +138,19 @@ final class EventTapEngine {
                              name: NSWorkspace.didActivateApplicationNotification, object: nil)
         startWatchdog()
         startDeviceMonitor()
+    }
+
+    /// Spawn the tap thread if none is alive and the last creation attempt's backoff has elapsed.
+    /// Safe from any thread; the thread nils itself out under `lock` on exit.
+    private func startTapThreadIfNeeded() {
+        lock.lock()
+        guard thread == nil, Date() >= nextTapCreationAttemptAt else { lock.unlock(); return }
+        let t = Thread { [weak self] in self?.threadMain() }
+        t.name = "com.mousse.event-tap"
+        t.qualityOfService = .userInteractive
+        thread = t
+        lock.unlock()
+        t.start()
     }
 
     /// Space/app-focus changed — end any in-flight smooth gesture so it can't get orphaned across the
@@ -182,10 +208,19 @@ final class EventTapEngine {
         hidManager = mgr
     }
 
-    /// On wake, re-enable the tap AND rebuild the scroll animator's display link, which macOS
-    /// invalidates across sleep (leaving smooth scroll dead until it eventually self-heals).
+    /// On wake, REBUILD the tap (not just re-enable it — see `eventTapRunLoop`) AND rebuild the
+    /// scroll animator's display link, which macOS invalidates across sleep (leaving smooth scroll
+    /// dead until it eventually self-heals). Debounced: a multi-display wake posts a burst.
     @objc func handleWake() {
-        reEnableTap()
+        wakeDebounceWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.performWakeRecovery() }
+        wakeDebounceWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + EventTapEngine.wakeDebounceInterval,
+                                      execute: item)
+    }
+
+    private func performWakeRecovery() {
+        requestEventTapRebuild(reason: "wake or display change")
         scrollAnimator.handleWake()
         magnifier.endNow()
         requestDragCancel()
@@ -195,17 +230,86 @@ final class EventTapEngine {
     }
 
     /// Re-enable the tap if macOS disabled it (e.g. across sleep/wake). Safe to call from any thread
-    /// and idempotent — tapEnable on an already-enabled tap is a no-op.
+    /// and idempotent — tapEnable on an already-enabled tap is a no-op. Escalates to a full rebuild
+    /// when `tapEnable` doesn't take, and (re)starts the tap thread if there is no tap at all.
     @objc func reEnableTap() {
-        lock.lock(); let tap = self.tap; lock.unlock()
-        guard let tap else { return }
+        lock.lock()
+        let tap = self.tap
+        let rebuildPending = tapRebuildPending
+        lock.unlock()
+        guard !rebuildPending else { return }
+        guard let tap else {
+            if AccessibilityPermission.isTrusted { startTapThreadIfNeeded() }
+            return
+        }
         if !CGEvent.tapIsEnabled(tap: tap) {
             CGEvent.tapEnable(tap: tap, enable: true)
-            NSLog("Mousse: event tap was disabled (sleep/wake?), re-enabled")
+            if CGEvent.tapIsEnabled(tap: tap) {
+                recordEventTapRecovery()
+                NSLog("Mousse: event tap was disabled (sleep/wake?), re-enabled")
+            } else {
+                requestEventTapRebuild(reason: "tapEnable did not restore the tap")
+            }
         }
     }
 
+    /// Ask the tap thread to tear its tap down and build a fresh one. Idempotent while a rebuild
+    /// is in flight. With no thread alive (creation failed earlier) this just kicks a new attempt.
+    private func requestEventTapRebuild(reason: String) {
+        lock.lock()
+        guard !tapRebuildPending else { lock.unlock(); return }
+        tapRebuildPending = true
+        guard let runLoop = eventTapRunLoop else {
+            // No live loop to stop: the flag has nothing to restart, so clear it and start fresh.
+            tapRebuildPending = false
+            lock.unlock()
+            if AccessibilityPermission.isTrusted { startTapThreadIfNeeded() }
+            return
+        }
+        lock.unlock()
+        NSLog("Mousse: rebuilding event tap (%@)", reason)
+        // Stop from INSIDE the loop: a direct `CFRunLoopStop` is a no-op unless the loop is
+        // already running, so one issued in the gap between `eventTapRunLoop` being published
+        // and `CFRunLoopRun()` starting would vanish — leaving `tapRebuildPending` stuck true and
+        // every later rebuild/re-enable refused. A block enqueued before the loop starts runs on
+        // its first pass, so the stop always lands.
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) {
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        }
+        CFRunLoopWakeUp(runLoop)
+    }
+
+    private func recordEventTapRecovery() {
+        lock.lock()
+        eventTapRecoveryCount += 1
+        lastEventTapRecoveryAt = Date()
+        lock.unlock()
+    }
+
+    /// Snapshot for the Settings window. Cheap; safe from any thread.
+    func tapStatus(now: Date = Date()) -> EventTapStatus {
+        lock.lock()
+        let tap = self.tap
+        let recoveryCount = eventTapRecoveryCount
+        let lastRecoveryAt = lastEventTapRecoveryAt
+        let rebuildPending = tapRebuildPending
+        let creationFailed = tapCreationFailed
+        lock.unlock()
+        let health = EventTapHealth.resolve(
+            accessibilityTrusted: AccessibilityPermission.isTrusted,
+            hasTap: tap != nil,
+            tapEnabled: tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false,
+            rebuildPending: rebuildPending,
+            creationFailed: creationFailed,
+            lastRecoveryAt: lastRecoveryAt,
+            now: now)
+        return EventTapStatus(health: health, recoveryCount: recoveryCount,
+                              lastRecoveryAt: lastRecoveryAt)
+    }
+
     /// Periodically poll for a silently-disabled tap. 2s is invisible to the user yet costs nothing.
+    /// Also the retry path after a failed creation: once Accessibility is granted, the next tick
+    /// brings the tap up (`reEnableTap` starts the thread when there is no tap).
     private func startWatchdog() {
         let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in self?.reEnableTap() }
         RunLoop.main.add(timer, forMode: .common)
@@ -265,37 +369,72 @@ final class EventTapEngine {
 
         let refcon = Unmanaged.passUnretained(self).toOpaque()
 
-        // tapCreate returns nil until Accessibility is granted. Retry instead of giving up, so the
-        // tap comes alive the moment the user flips the toggle — no app restart needed.
+        // tapCreate returns nil until Accessibility is granted. Try briefly, then yield the thread:
+        // the main-thread watchdog starts a fresh attempt every 2 s, so the tap still comes alive
+        // moments after the user flips the toggle — without parking a user-interactive thread in
+        // an infinite sleep loop for a user who simply declined.
         var created: CFMachPort?
-        var attempts = 0
-        while created == nil {
+        for delay in [0, 0.1, 0.25, 0.5, 1.0] {
+            guard AccessibilityPermission.isTrusted else { break }
+            if delay > 0 { Thread.sleep(forTimeInterval: delay) }
             created = CGEvent.tapCreate(tap: .cghidEventTap,
                                         place: .headInsertEventTap,
                                         options: .defaultTap,
                                         eventsOfInterest: mask,
                                         callback: eventTapCallback,
                                         userInfo: refcon)
-            if created == nil {
-                // Accessibility is normally granted seconds after the prompt — but it may never be.
-                // Log the first failure, then at most once a minute: an unconditional 1 Hz NSLog
-                // runs forever and floods the unified log for a user who simply declined.
-                if attempts % 60 == 0 {
-                    NSLog("Mousse: event tap not created (Accessibility not granted yet?), retrying…")
-                }
-                attempts += 1
-                Thread.sleep(forTimeInterval: 1.0)
-            }
+            if created != nil { break }
         }
-        let tap = created!
-        lock.lock(); self.tap = tap; lock.unlock()
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            NSLog("Mousse: failed to create run-loop source for the event tap") // would trap below
+        guard let tap = created else {
+            // Trusted-but-failed is the abnormal case: back off 1 s and surface it as `.failed`.
+            // Untrusted is expected — retry as soon as the watchdog sees the grant.
+            let trusted = AccessibilityPermission.isTrusted
+            lock.lock()
+            thread = nil
+            tapCreationFailed = trusted
+            nextTapCreationAttemptAt = trusted ? Date().addingTimeInterval(1.0) : .distantPast
+            lock.unlock()
+            if trusted { NSLog("Mousse: event tap creation failed; retrying shortly") }
             return
         }
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            NSLog("Mousse: failed to create run-loop source for the event tap")
+            CFMachPortInvalidate(tap)
+            lock.lock()
+            thread = nil
+            tapCreationFailed = true
+            nextTapCreationAttemptAt = Date().addingTimeInterval(1.0)
+            lock.unlock()
+            return
+        }
+        let runLoop: CFRunLoop = CFRunLoopGetCurrent()
+        CFRunLoopAddSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        CFRunLoopRun()
+        lock.lock()
+        self.tap = tap
+        eventTapRunLoop = runLoop
+        tapCreationFailed = false
+        nextTapCreationAttemptAt = .distantPast
+        lock.unlock()
+
+        CFRunLoopRun() // returns only when `requestEventTapRebuild` stops the loop
+
+        // Tear down explicitly — remove the source and invalidate the port — so WindowServer holds
+        // no orphaned hook from this tap while the replacement comes up.
+        CFRunLoopRemoveSource(runLoop, source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: false)
+        CFMachPortInvalidate(tap)
+        lock.lock()
+        let shouldRestart = tapRebuildPending
+        self.tap = nil
+        eventTapRunLoop = nil
+        thread = nil
+        tapRebuildPending = false
+        lock.unlock()
+        if shouldRestart {
+            recordEventTapRecovery()
+            startTapThreadIfNeeded()
+        }
     }
 
     /// Called from the tap thread for every event of interest.
@@ -303,7 +442,10 @@ final class EventTapEngine {
         // macOS disables a slow/stalled tap — re-enable it (the classic event-tap gotcha).
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             lock.lock(); let tap = self.tap; lock.unlock()
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if let tap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+                recordEventTapRecovery()
+            }
             return Unmanaged.passUnretained(event)
         }
 

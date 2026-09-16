@@ -36,15 +36,61 @@ struct SettingsView: View {
                     LoginItem.setEnabled(newValue)
                     launchAtLogin = LoginItem.isEnabled // resync: registration can fail
                 }))
-            LabeledContent("Accessibility") {
-                if AccessibilityPermission.isTrusted {
-                    Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                } else {
-                    Button("Grant…") { AccessibilityPermission.openSettings() }
+            if let issue = store.persistenceIssue {
+                persistenceIssueBanner(issue)
+            }
+            Section("Permissions") {
+                LabeledContent("Accessibility") {
+                    if AccessibilityPermission.isTrusted {
+                        Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else {
+                        Button("Grant…") { AccessibilityPermission.openSettings() }
+                    }
+                }
+                // Not required for the mouse tap — shown because a missing grant can look exactly
+                // like a dead tap on some macOS releases, and it's the first thing to check then.
+                LabeledContent("Input Monitoring") {
+                    if InputMonitoringPermission.isTrusted {
+                        Label("Granted", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    } else {
+                        Button("Grant…") { InputMonitoringPermission.request() }
+                    }
+                }
+                Text("Input Monitoring is optional. Grant it only if scrolling or buttons stay dead after Accessibility is on.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Event tap") {
+                // Re-read every 2 s while the window is open; nothing else needs to publish it.
+                TimelineView(.periodic(from: .now, by: 2)) { context in
+                    let status = EventTapEngine.shared.tapStatus(now: context.date)
+                    LabeledContent("Status") {
+                        Label(status.health.label, systemImage: status.health == .healthy
+                              ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(status.health == .healthy ? .green : .orange)
+                    }
+                    LabeledContent("Recoveries since launch") {
+                        Text("\(status.recoveryCount)")
+                    }
                 }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func persistenceIssueBanner(_ issue: ConfigPersistenceIssue) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(issue.message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.callout)
+            HStack {
+                Button(store.saveIsBlocked ? "Overwrite with current settings" : "Retry Save") {
+                    store.retrySave()
+                }
+                if !store.saveIsBlocked {
+                    Button("Dismiss") { store.dismissPersistenceIssue() }
+                }
+            }
+        }
     }
 
     private var buttonsTab: some View {

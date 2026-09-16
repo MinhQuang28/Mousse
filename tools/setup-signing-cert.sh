@@ -36,8 +36,13 @@ echo "==> generating self-signed code-signing certificate (10y)"
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -config "$TMP/cert.cnf" >/dev/null 2>&1
 
-# -legacy + sha1 MAC: macOS Security framework can't read OpenSSL 3.x's modern PKCS12 MAC.
-openssl pkcs12 -export -legacy -macalg sha1 -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
+# OpenSSL 3 needs `-legacy` to emit a PKCS#12 bundle that macOS Security can read.
+# Apple's LibreSSL already uses the compatible algorithms and does not recognize that flag.
+PKCS12_ARGS=(-export -macalg sha1)
+if openssl version | grep -q '^OpenSSL 3\.'; then
+    PKCS12_ARGS+=(-legacy)
+fi
+openssl pkcs12 "${PKCS12_ARGS[@]}" -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
     -name "$CERT_NAME" -out "$TMP/cert.p12" -passout pass:qmf >/dev/null 2>&1
 
 echo "==> importing into login keychain (codesign-accessible, no prompt)"
@@ -45,4 +50,4 @@ echo "==> importing into login keychain (codesign-accessible, no prompt)"
 security import "$TMP/cert.p12" -k "$KEYCHAIN" -P qmf -A -T /usr/bin/codesign >/dev/null 2>&1
 
 echo "==> done. Identity installed:"
-security find-certificate -c "$CERT_NAME" "$KEYCHAIN" | grep -E '"labl"' || true
+security find-certificate -c "$CERT_NAME" -Z "$KEYCHAIN" | grep 'SHA-1 hash:' || true
