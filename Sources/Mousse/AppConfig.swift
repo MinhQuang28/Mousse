@@ -56,6 +56,7 @@ struct AppConfig: Codable, Sendable, Equatable {
     var spaceDragButton: Int = 0        // 0 = off; else button held to drag-switch Spaces
     var spaceDragThreshold: Double = 200 // pixels of horizontal drag per Space switch (discrete mode)
     var spaceDragReverse: Bool = false  // flip drag direction ↔ Space direction
+    var spaceDragLockPointer: Bool = false // pin the pointer in place while drag-switching
     var spaceDragFollowFinger: Bool = true // drive the real Space-slide (trackpad-like) when the
                                            // OS supports it; off = discrete one-jump-per-distance
     var excludedBundleIDs: [String] = [] // apps where scroll smoothing is bypassed (wheel stays
@@ -83,6 +84,7 @@ extension AppConfig {
         case enabled, reverseScroll, scrollMode, scrollSmoothness, smoothScroll, scrollSpeed, scrollLines
         case scrollAcceleration, smoothHighRes, zoomSpeed
         case spaceDragButton, spaceDragThreshold, spaceDragReverse, spaceDragFollowFinger
+        case spaceDragLockPointer
         case excludedBundleIDs, verticalToHorizontalBundleIDs, mappings
     }
 
@@ -117,6 +119,7 @@ extension AppConfig {
         spaceDragThreshold = field(Double.self, .spaceDragThreshold) ?? spaceDragThreshold
         spaceDragReverse   = field(Bool.self,   .spaceDragReverse)   ?? spaceDragReverse
         spaceDragFollowFinger = field(Bool.self, .spaceDragFollowFinger) ?? spaceDragFollowFinger
+        spaceDragLockPointer = field(Bool.self, .spaceDragLockPointer) ?? spaceDragLockPointer
         excludedBundleIDs  = field([String].self, .excludedBundleIDs) ?? excludedBundleIDs
         verticalToHorizontalBundleIDs = field([String].self, .verticalToHorizontalBundleIDs) ?? verticalToHorizontalBundleIDs
         mappings           = field([Lossy<ButtonMapping>].self, .mappings)?.compactMap(\.value) ?? mappings
@@ -148,6 +151,7 @@ extension AppConfig {
         try c.encode(spaceDragThreshold, forKey: .spaceDragThreshold)
         try c.encode(spaceDragReverse, forKey: .spaceDragReverse)
         try c.encode(spaceDragFollowFinger, forKey: .spaceDragFollowFinger)
+        try c.encode(spaceDragLockPointer, forKey: .spaceDragLockPointer)
         try c.encode(excludedBundleIDs, forKey: .excludedBundleIDs)
         try c.encode(verticalToHorizontalBundleIDs, forKey: .verticalToHorizontalBundleIDs)
         try c.encode(mappings, forKey: .mappings)

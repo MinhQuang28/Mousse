@@ -28,6 +28,12 @@ final class SpaceDragGesture {
     var threshold = 200.0   // pixels of horizontal drag per Space switch (discrete mode)
     var reverse = false     // flip which horizontal direction maps to which Space
     var followFinger = true // drive the real Space-slide transition when the OS supports it
+    var lockPointer = false // pin the pointer at the drag origin while dragging (MMF-style)
+
+    // Pointer-freeze hooks. Injected by the engine (real `PointerFreeze`) so tests can watch the
+    // lifecycle without touching the cursor. Called on the tap thread like everything else here.
+    var freezePointer: (() -> Void)?
+    var unfreezePointer: (() -> Void)?
 
     private let dockSwipe = DockSwipeSynthesizer()
     private var followingFinger = false // this drag is driving a live dock-swipe transition
@@ -85,6 +91,7 @@ final class SpaceDragGesture {
             // Abort the live transition too, or WindowServer is left holding a half-slid Space.
             dockSwipe.post(delta: 0, type: .horizontal, phase: .cancelled)
         }
+        unfreezePointer?()
         down = false
         dragged = false
         followingFinger = false
@@ -121,6 +128,7 @@ final class SpaceDragGesture {
         } else if dragged {
             flickOnRelease()
         }
+        unfreezePointer?()
         let wasClick = !dragged
         down = false
         followingFinger = false
@@ -144,6 +152,8 @@ final class SpaceDragGesture {
             accX += deltaX; accY += deltaY
             if max(abs(accX), abs(accY)) >= deadzone {
                 dragged = true
+                // Anchor only once the drag is real — a plain click must never pin the pointer.
+                if lockPointer { freezePointer?() }
                 axis = abs(accX) >= abs(accY) ? .horizontal : .vertical
                 if axis == .horizontal, followFinger, DockSwipeSynthesizer.isSupported {
                     followingFinger = true

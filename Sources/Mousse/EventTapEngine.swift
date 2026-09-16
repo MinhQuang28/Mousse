@@ -53,6 +53,7 @@ final class EventTapEngine {
     private var spaceDragThreshold = 200.0
     private var spaceDragReverse = false
     private var spaceDragFollowFinger = true
+    private var spaceDragLockPointer = false
     private var captureMode = false
     /// Capture must never outlive the Settings interaction that opened it: while it is on, every
     /// mouse button passes through unmapped and the Space-drag gesture is bypassed, so a UI path
@@ -117,6 +118,13 @@ final class EventTapEngine {
         startTapThreadIfNeeded()
         guard !observersInstalled else { return }
         observersInstalled = true
+
+        // Pointer-freeze hooks for the drag gesture. Gesture state and PointerFreeze are both
+        // tap-thread-only, so these closures only ever run there.
+        spaceDrag.freezePointer = {
+            PointerFreeze.shared.freeze(at: CGEvent(source: nil)?.location ?? .zero)
+        }
+        spaceDrag.unfreezePointer = { PointerFreeze.shared.unfreeze() }
 
         // macOS often disables the tap across sleep/wake WITHOUT delivering a
         // tapDisabledByTimeout event to our callback — so the callback's re-enable never fires
@@ -353,6 +361,7 @@ final class EventTapEngine {
         spaceDragThreshold = config.spaceDragThreshold
         spaceDragReverse = config.spaceDragReverse
         spaceDragFollowFinger = config.spaceDragFollowFinger
+        spaceDragLockPointer = config.spaceDragLockPointer
         excludedBundleIDs = Set(config.excludedBundleIDs).union(EventTapEngine.terminalBundleIDs)
         verticalToHorizontalBundleIDs = Set(config.verticalToHorizontalBundleIDs)
         mappingsByButton = Dictionary(config.mappings.map { ($0.buttonNumber, $0.action) },
@@ -419,10 +428,13 @@ final class EventTapEngine {
         nextTapCreationAttemptAt = .distantPast
         lock.unlock()
 
+        PointerFreeze.shared.install(on: runLoop)
         CFRunLoopRun() // returns only when `requestEventTapRebuild` stops the loop
 
-        // Tear down explicitly — remove the source and invalidate the port — so WindowServer holds
-        // no orphaned hook from this tap while the replacement comes up.
+        // Tear down explicitly — remove the sources and invalidate the ports — so WindowServer
+        // holds no orphaned hook from this tap while the replacement comes up. The freeze tap goes
+        // first: it also releases a pointer pinned by a drag the wake interrupted.
+        PointerFreeze.shared.uninstall(from: runLoop)
         CFRunLoopRemoveSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: false)
         CFMachPortInvalidate(tap)
@@ -479,6 +491,7 @@ final class EventTapEngine {
         spaceDrag.threshold = spaceDragThreshold
         spaceDrag.reverse = spaceDragReverse
         spaceDrag.followFinger = spaceDragFollowFinger
+        spaceDrag.lockPointer = spaceDragLockPointer
         lock.unlock()
 
         if dragCancel { spaceDrag.cancel() } // tap thread — safe to touch the gesture's state

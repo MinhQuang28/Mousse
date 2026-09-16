@@ -176,6 +176,7 @@ struct SettingsView: View {
                                    format: { "\(Int($0)) px" })
                 }
                 Toggle("Reverse drag direction", isOn: $store.config.spaceDragReverse)
+                Toggle("Keep pointer in place while dragging", isOn: $store.config.spaceDragLockPointer)
             }
             Text("Hold the chosen button and drag left/right to switch Spaces. Follow-finger drives the real macOS slide (like a three-finger trackpad swipe); turn it off for discrete one-jump-per-distance switching. Vertical drags trigger Mission Control (up) or App Exposé (down). On macOS 27+ discrete jumps are used regardless, until follow-finger is ported.")
                 .font(.caption).foregroundStyle(.secondary)
