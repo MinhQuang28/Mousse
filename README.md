@@ -14,6 +14,8 @@ or any system configuration changes.
   with no coast).
 - **Adjustable speed** — wheel sensitivity in Smooth; in every style it also scales
   high-resolution (continuous) mice — and **lines-per-notch** (Smooth-step).
+- **Independent zoom speed** — ⌘ + wheel pinch-zoom sensitivity (0.2×–6×) is decoupled from
+  scroll speed, so design tools like Figma can zoom finely while pages still scroll fast.
 - **Reverse direction** independent of the system setting.
 - **Smooth high-res mice** — opt-in smoothing for high-resolution mice that have no hardware
   flywheel (e.g. Keychron M6) and otherwise scroll choppily. Leave it off for free-spin mice
@@ -29,12 +31,15 @@ or any system configuration changes.
 ### Gestures
 
 - **Drag to switch Spaces** — hold a chosen button and drag left/right; one Space jump per
-  configurable drag distance.
+  configurable drag distance. Optionally keeps the pointer pinned in place while dragging.
 
 ### Reliability
 
 - Recovers automatically from **sleep/wake** and **display changes** (plugging/unplugging a
-  monitor or changing resolution) — scroll and gestures never silently die.
+  monitor or changing resolution) — the event tap is rebuilt from scratch, not just re-enabled,
+  so clicks and scroll never silently die. Settings shows the tap's health and recovery count.
+- A **corrupt or unreadable config** is backed up, never overwritten silently; save failures are
+  surfaced in Settings and the menu with a retry.
 - Correctly handles **high-resolution / free-spin mice** (honors speed and reverse without
   fighting the hardware flywheel).
 - Runs as one Swift process with negligible idle CPU and a small, stable memory footprint.
@@ -102,8 +107,8 @@ open build/Mousse.app
 ## Usage
 
 Launch the app — it lives in the menu bar (no Dock icon). Open **Settings** (⌘,) for four tabs:
-**General** (enable, launch-at-login, Accessibility status), **Buttons**, **Scroll**, and
-**Gestures**.
+**General** (enable, launch-at-login, permission and event-tap status), **Buttons**, **Scroll**,
+and **Gestures**.
 
 ## Development
 
