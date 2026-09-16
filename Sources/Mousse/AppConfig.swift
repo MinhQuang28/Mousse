@@ -52,6 +52,7 @@ struct AppConfig: Codable, Sendable, Equatable {
     var scrollAcceleration: Bool = true // rapid consecutive notches scroll farther (Smooth mode only)
     var smoothHighRes: Bool = false     // also smooth high-res "continuous" mice (e.g. Keychron M6) that
                                         // lack a flywheel; keep off for MX-Master-style free-spin mice
+    var zoomSpeed: Double = 1.0         // ⌘+wheel pinch sensitivity multiplier, independent of scrollSpeed
     var spaceDragButton: Int = 0        // 0 = off; else button held to drag-switch Spaces
     var spaceDragThreshold: Double = 200 // pixels of horizontal drag per Space switch (discrete mode)
     var spaceDragReverse: Bool = false  // flip drag direction ↔ Space direction
@@ -80,7 +81,7 @@ struct AppConfig: Codable, Sendable, Equatable {
 extension AppConfig {
     enum CodingKeys: String, CodingKey {
         case enabled, reverseScroll, scrollMode, scrollSmoothness, smoothScroll, scrollSpeed, scrollLines
-        case scrollAcceleration, smoothHighRes
+        case scrollAcceleration, smoothHighRes, zoomSpeed
         case spaceDragButton, spaceDragThreshold, spaceDragReverse, spaceDragFollowFinger
         case excludedBundleIDs, verticalToHorizontalBundleIDs, mappings
     }
@@ -111,6 +112,7 @@ extension AppConfig {
         scrollLines        = field(Int.self,    .scrollLines)        ?? scrollLines
         scrollAcceleration = field(Bool.self,   .scrollAcceleration) ?? scrollAcceleration
         smoothHighRes      = field(Bool.self,   .smoothHighRes)      ?? smoothHighRes
+        zoomSpeed          = field(Double.self, .zoomSpeed)          ?? zoomSpeed
         spaceDragButton    = field(Int.self,    .spaceDragButton)    ?? spaceDragButton
         spaceDragThreshold = field(Double.self, .spaceDragThreshold) ?? spaceDragThreshold
         spaceDragReverse   = field(Bool.self,   .spaceDragReverse)   ?? spaceDragReverse
@@ -126,6 +128,7 @@ extension AppConfig {
         // (JSONDecoder rejects NaN/Inf on its own, so finiteness needs no check here.)
         scrollSpeed        = min(max(scrollSpeed, 0.05), 1.5)
         scrollLines        = min(max(scrollLines, 1), 10)
+        zoomSpeed          = min(max(zoomSpeed, 0.2), 6.0)
         spaceDragThreshold = min(max(spaceDragThreshold, 100), 400)
     }
 
@@ -140,6 +143,7 @@ extension AppConfig {
         try c.encode(scrollLines, forKey: .scrollLines)
         try c.encode(scrollAcceleration, forKey: .scrollAcceleration)
         try c.encode(smoothHighRes, forKey: .smoothHighRes)
+        try c.encode(zoomSpeed, forKey: .zoomSpeed)
         try c.encode(spaceDragButton, forKey: .spaceDragButton)
         try c.encode(spaceDragThreshold, forKey: .spaceDragThreshold)
         try c.encode(spaceDragReverse, forKey: .spaceDragReverse)

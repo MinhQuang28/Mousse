@@ -113,14 +113,13 @@ struct SettingsView: View {
             // Standard and Smooth-step too, so hiding it there left a gain the user had set in
             // Smooth silently applied with no control to change it.
             VStack(alignment: .leading) {
-                Text("Scroll speed: \(String(format: "%.2f×", store.config.scrollSpeed))")
                 // Floor of 0.05 (not 0.2): high-res "continuous" mice natively scroll fast, and
                 // their gain is speed/0.5 — a 0.2 floor still meant 40% of native, too fast for
                 // slow scrollers. 0.05 → 10% of native. Finer step for control at the low end.
-                Slider(value: $store.config.scrollSpeed, in: 0.05...1.5, step: 0.05) {
-                    Text("Scroll speed")
-                } minimumValueLabel: { Text("Slow").font(.caption) }
-                  maximumValueLabel: { Text("Fast").font(.caption) }
+                SettingsSlider(title: "Scroll speed", value: $store.config.scrollSpeed,
+                               range: 0.05...1.5, step: 0.05,
+                               format: { String(format: "%.2f×", $0) },
+                               minLabel: "Slow", maxLabel: "Fast")
                 Text(store.config.scrollMode == .smooth
                      ? "Wheel sensitivity per notch; also scales high-resolution (continuous) mice."
                      : "Scales high-resolution (continuous) mice only — a notched wheel keeps its native step in this mode (except with ⌥ or ⌃ held).")
@@ -135,6 +134,14 @@ struct SettingsView: View {
                 }
             }
             Toggle("Reverse scroll direction", isOn: $store.config.reverseScroll)
+            VStack(alignment: .leading) {
+                SettingsSlider(title: "Zoom speed (⌘ + wheel)", value: $store.config.zoomSpeed,
+                               range: 0.2...6.0, step: 0.1,
+                               format: { String(format: "%.1f×", $0) },
+                               minLabel: "Fine", maxLabel: "Coarse")
+                Text("Pinch-zoom sensitivity per notch, independent of scroll speed. Lower it if design tools (Figma, Sketch) zoom too far per click.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if store.config.scrollMode != .standard {
                 Toggle("Smooth high-res mice", isOn: $store.config.smoothHighRes)
                 Text("Turn on for high-resolution mice that scroll choppily (e.g. Keychron M6) so they use the same smoothing as a notched wheel. Leave OFF for free-spin mice like the MX Master 3 — their hardware flywheel is already smooth and this would fight it.")
@@ -163,10 +170,10 @@ struct SettingsView: View {
             if store.config.spaceDragButton != 0 {
                 Toggle("Follow-finger animation", isOn: $store.config.spaceDragFollowFinger)
                 if !store.config.spaceDragFollowFinger {
-                    VStack(alignment: .leading) {
-                        Text("Drag distance per Space: \(Int(store.config.spaceDragThreshold)) px")
-                        Slider(value: $store.config.spaceDragThreshold, in: 100...400, step: 10)
-                    }
+                    SettingsSlider(title: "Drag distance per Space",
+                                   value: $store.config.spaceDragThreshold,
+                                   range: 100...400, step: 10,
+                                   format: { "\(Int($0)) px" })
                 }
                 Toggle("Reverse drag direction", isOn: $store.config.spaceDragReverse)
             }

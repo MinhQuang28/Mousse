@@ -163,3 +163,19 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(decoded.spaceDragThreshold, 400, accuracy: 1e-9)
     }
 }
+
+extension AppConfigTests {
+    func testZoomSpeedRoundTripsAndClamps() throws {
+        var c = AppConfig()
+        c.zoomSpeed = 0.5
+        let data = try JSONEncoder().encode(c)
+        XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: data).zoomSpeed, 0.5)
+
+        let low = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"zoomSpeed": 0.01}"#.utf8))
+        XCTAssertEqual(low.zoomSpeed, 0.2)
+        let high = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"zoomSpeed": 99}"#.utf8))
+        XCTAssertEqual(high.zoomSpeed, 6.0)
+        let missing = try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8))
+        XCTAssertEqual(missing.zoomSpeed, 1.0, "old configs keep today's zoom feel")
+    }
+}

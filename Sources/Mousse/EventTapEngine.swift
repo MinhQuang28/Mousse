@@ -48,6 +48,7 @@ final class EventTapEngine {
     private var scrollLines = 3
     private var scrollAcceleration = true
     private var smoothHighRes = false
+    private var zoomSpeed = 1.0
     private var spaceDragButton = 0
     private var spaceDragThreshold = 200.0
     private var spaceDragReverse = false
@@ -347,6 +348,7 @@ final class EventTapEngine {
         scrollLines = config.scrollLines
         scrollAcceleration = config.scrollAcceleration
         smoothHighRes = config.smoothHighRes
+        zoomSpeed = config.zoomSpeed
         spaceDragButton = config.spaceDragButton
         spaceDragThreshold = config.spaceDragThreshold
         spaceDragReverse = config.spaceDragReverse
@@ -466,6 +468,7 @@ final class EventTapEngine {
         let lines = scrollLines
         let accelerate = scrollAcceleration
         let smoothHiRes = smoothHighRes
+        let zoomGain = zoomSpeed
         let excluded = excludedBundleIDs
         let vToH = verticalToHorizontalBundleIDs
         let dragCancel = pendingDragCancel
@@ -589,12 +592,12 @@ final class EventTapEngine {
                     // the unambiguous field. Same 800 scale: point ≈ fixedPt on the hardware the
                     // constant was tuned on.
                     mag = Double(event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
-                               + event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)) * dir / 800.0
+                               + event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)) * dir * zoomGain / 800.0
                 } else {
                     // One notch = one comfortable zoom step ('s medium tick ÷ its 800 scale).
                     let notches = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
                                 + event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
-                    mag = Double(notches.signum()) * dir * 60.0 / 800.0
+                    mag = Double(notches.signum()) * dir * 60.0 * zoomGain / 800.0
                 }
                 let chromium = cursorID.map { id in
                     EventTapEngine.chromiumBundlePrefixes.contains { id.hasPrefix($0) }
