@@ -109,6 +109,10 @@ final class ScrollAnimator: NSObject {
     /// ceiling plus the profile's coast from it (≈0.3 s Snappy … ≈1.2 s Floaty, see
     /// `ceilingTail`); continued swiping keeps topping the backlog up, so sustained flings fly.
     private static let planMaxDistance = maxOutputSpeed * ScrollTuning.maxDuration
+    /// px/s above which a same-direction notch keeps the running glide's leftover even at a
+    /// sequence start (see `addTick`). Below it the glide is a settling crawl, where dropping the
+    /// sliver keeps slow deliberate notches exact.
+    static let keepLeftoverSpeed = 250.0
 
     /// Output speed of the current plan (caller holds `lock`) — what the page actually moves
     /// at, for seeding the next notch and the brake. The plan's own curve is wrong in two
@@ -216,16 +220,21 @@ final class ScrollAnimator: NSObject {
 
         if stepped {
             let dist = Double(lines) * pixelsPerLine
+            // One notch = one fixed step: use only the SIGN of the line delta. macOS already folds
+            // its own wheel acceleration into the magnitude (2–4+ on a fast spin), which would
+            // multiply the "fixed" step — the smooth path ignores it for the same reason.
+            let stepV: Double = lineV == 0 ? 0 : (lineV > 0 ? 1 : -1)
+            let stepH: Double = lineH == 0 ? 0 : (lineH > 0 ? 1 : -1)
             lock.lock()
             omega = omegaStep
             phaselessStream = false
             clearPlanLocked()
             interruptMomentumLocked()
             // Reversing direction: drop the opposing remainder AND velocity so the flip is immediate.
-            if lineV != 0, (lineV > 0) != (remV > 0) { remV = 0; carryV = 0; velV = 0 }
-            if lineH != 0, (lineH > 0) != (remH > 0) { remH = 0; carryH = 0; velH = 0 }
-            remV = clampDist(remV + lineV * dist)
-            remH = clampDist(remH + lineH * dist)
+            if stepV != 0, (stepV > 0) != (remV > 0) { remV = 0; carryV = 0; velV = 0 }
+            if stepH != 0, (stepH > 0) != (remH > 0) { remH = 0; carryH = 0; velH = 0 }
+            remV = clampDist(remV + stepV * dist)
+            remH = clampDist(remH + stepH * dist)
             lineUnitPx = dist // this step's px per device line, for the legacy line fields
             lastMotionTime = now
             let action = wakeActionLocked(now: now)
@@ -234,7 +243,9 @@ final class ScrollAnimator: NSObject {
             return
         }
 
-        let axisIsV = lineV != 0
+        // One plan = one axis. A diagonal event (both deltas set — tilt wheels, some drivers)
+        // follows its DOMINANT axis instead of always dropping the horizontal part.
+        let axisIsV = abs(lineV) >= abs(lineH)
         let sign: Double = axisIsV ? (lineV > 0 ? 1 : -1) : (lineH > 0 ? 1 : -1)
 
         lock.lock()
@@ -277,8 +288,14 @@ final class ScrollAnimator: NSObject {
         var v0 = 0.0
         if let p = plan, planAxisIsV == axisIsV, planSign == sign {
             let planTime = min((now - planStart) * planRate, p.duration)
-            if !analysis.isSequenceStart { leftover = max(p.total - planEmitted, 0) }
             v0 = planSpeedLocked(p, at: planTime)
+            // A sequence start normally drops the leftover — but NOT while the glide is still
+            // visibly moving: there the new plan would start at `v0` yet only cover this notch's
+            // px, so a same-direction notch into a long coast cut the fling short (the plan falls
+            // back to a slower coast-only start → a visible speed drop). Keep the distance.
+            if !analysis.isSequenceStart || v0 >= ScrollAnimator.keepLeftoverSpeed {
+                leftover = max(p.total - planEmitted, 0)
+            }
         }
         let p = HybridPlan(distance: min(leftover + px, ScrollAnimator.planMaxDistance),
                            initialSpeed: v0, profile: profile)

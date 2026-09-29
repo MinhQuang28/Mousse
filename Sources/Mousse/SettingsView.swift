@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The Settings window (⌘,). Three tabs: General, Buttons, Scroll.
+/// The Settings window (⌘,). Tabs: General, Buttons, Scroll, Devices, Gestures.
 struct SettingsView: View {
     @EnvironmentObject var store: ConfigStore
 
@@ -17,6 +17,7 @@ struct SettingsView: View {
             generalTab.tabItem  { Label("General", systemImage: "gearshape") }
             buttonsTab.tabItem  { Label("Buttons", systemImage: "computermouse") }
             scrollTab.tabItem   { Label("Scroll", systemImage: "scroll") }
+            DevicesView().tabItem { Label("Devices", systemImage: "cable.connector") }
             gesturesTab.tabItem { Label("Gestures", systemImage: "hand.draw") }
         }
         .frame(width: 480, height: 360)
@@ -99,61 +100,16 @@ struct SettingsView: View {
 
     private var scrollTab: some View {
         Form {
-            Picker("Scroll style", selection: $store.config.scrollMode) {
-                ForEach(ScrollMode.allCases, id: \.self) { Text($0.label).tag($0) }
-            }
-            if store.config.scrollMode == .smooth {
-                Picker("Smoothness", selection: $store.config.scrollSmoothness) {
-                    ForEach(ScrollSmoothness.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                Text("Snappy = direct with a minimal tail (\"Regular\"). Balanced = smooth but responsive. Floaty = long trackpad-like coast ( \"High\").")
+            ScrollSettingsEditor(settings: $store.config.scrollSettings)
+            if !store.config.deviceProfiles.isEmpty {
+                Text("Mice with their own profile (Devices tab) ignore these settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            // Shown in EVERY mode: the slider scales high-resolution ("continuous") mice in
-            // Standard and Smooth-step too, so hiding it there left a gain the user had set in
-            // Smooth silently applied with no control to change it.
-            VStack(alignment: .leading) {
-                // Floor of 0.05 (not 0.2): high-res "continuous" mice natively scroll fast, and
-                // their gain is speed/0.5 — a 0.2 floor still meant 40% of native, too fast for
-                // slow scrollers. 0.05 → 10% of native. Finer step for control at the low end.
-                SettingsSlider(title: "Scroll speed", value: $store.config.scrollSpeed,
-                               range: 0.05...1.5, step: 0.05,
-                               format: { String(format: "%.2f×", $0) },
-                               minLabel: "Slow", maxLabel: "Fast")
-                Text(store.config.scrollMode == .smooth
-                     ? "Wheel sensitivity per notch; also scales high-resolution (continuous) mice."
-                     : "Scales high-resolution (continuous) mice only — a notched wheel keeps its native step in this mode (except with ⌥ or ⌃ held).")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if store.config.scrollMode == .smooth {
-                Toggle("Scroll acceleration", isOn: $store.config.scrollAcceleration)
-            }
-            if store.config.scrollMode == .smoothStep {
-                Stepper(value: $store.config.scrollLines, in: 1...10) {
-                    Text("Lines per notch: \(store.config.scrollLines)")
-                }
-            }
-            Toggle("Reverse scroll direction", isOn: $store.config.reverseScroll)
-            VStack(alignment: .leading) {
-                SettingsSlider(title: "Zoom speed (⌘ + wheel)", value: $store.config.zoomSpeed,
-                               range: 0.2...6.0, step: 0.1,
-                               format: { String(format: "%.1f×", $0) },
-                               minLabel: "Fine", maxLabel: "Coarse")
-                Text("Pinch-zoom sensitivity per notch, independent of scroll speed. Lower it if design tools (Figma, Sketch) zoom too far per click.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if store.config.scrollMode != .standard {
-                Toggle("Smooth high-res mice", isOn: $store.config.smoothHighRes)
-                Text("Turn on for high-resolution mice that scroll choppily (e.g. Keychron M6) so they use the same smoothing as a notched wheel. Leave OFF for free-spin mice like the MX Master 3 — their hardware flywheel is already smooth and this would fight it.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Text("Standard = instant wheel (no animation). Smooth = trackpad-style momentum. Smooth-step = Windows-browser feel: each notch eases a fixed number of lines with no coast. Applies to a physical mouse wheel only — trackpad scrolling is left untouched.")
-                .font(.caption).foregroundStyle(.secondary)
             Section("Modifier keys while scrolling") {
                 Text("⇧ Shift — scroll horizontally (swaps the axes)\n⌥ Option — precise: a few pixels per notch for fine control\n⌃ Control — quick: about half a window per notch, long glide\n⌘ Command — zoom: a real trackpad pinch (browsers, Preview, Maps…)")
                     .font(.caption)
             }
-            if store.config.scrollMode != .standard {
+            if store.config.scrollMode != .standard || !store.config.deviceProfiles.isEmpty {
                 ExcludedAppsView()
             }
             TransposedAppsView() // axis-swap works in every scroll mode, including Standard

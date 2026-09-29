@@ -16,7 +16,11 @@ or any system configuration changes.
   high-resolution (continuous) mice — and **lines-per-notch** (Smooth-step).
 - **Independent zoom speed** — ⌘ + wheel pinch-zoom sensitivity (0.2×–6×) is decoupled from
   scroll speed, so design tools like Figma can zoom finely while pages still scroll fast.
-- **Reverse direction** independent of the system setting.
+- **Reverse direction** independent of the system setting, separately for vertical and
+  horizontal scrolling.
+- **Per-device profiles** — give each mouse its own scroll style, speed, reverse and zoom speed
+  (Settings → Devices; needs Input Monitoring to tell mice apart).
+- **Smooth zoom** — each ⌘ + wheel notch glides like a trackpad pinch instead of jumping.
 - **Smooth high-res mice** — opt-in smoothing for high-resolution mice that have no hardware
   flywheel (e.g. Keychron M6) and otherwise scroll choppily. Leave it off for free-spin mice
   like the MX Master 3, whose flywheel is already smooth.

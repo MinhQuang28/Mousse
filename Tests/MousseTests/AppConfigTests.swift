@@ -179,3 +179,59 @@ extension AppConfigTests {
         XCTAssertEqual(missing.zoomSpeed, 1.0, "old configs keep today's zoom feel")
     }
 }
+
+extension AppConfigTests {
+    /// Before the per-axis split `reverseScroll` flipped both axes; old configs must keep that.
+    func testHorizontalReverseInheritsLegacyFlag() throws {
+        let legacy = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"reverseScroll":true}"#.utf8))
+        XCTAssertTrue(legacy.reverseScroll)
+        XCTAssertTrue(legacy.reverseScrollHorizontal)
+
+        let split = try JSONDecoder().decode(
+            AppConfig.self, from: Data(#"{"reverseScroll":true,"reverseScrollHorizontal":false}"#.utf8))
+        XCTAssertTrue(split.reverseScroll)
+        XCTAssertFalse(split.reverseScrollHorizontal)
+    }
+
+    func testScrollSettingsMirrorsGlobalFields() {
+        var c = AppConfig()
+        var s = c.scrollSettings
+        s.scrollMode = .smoothStep
+        s.scrollSpeed = 1.2
+        s.reverseScrollHorizontal = true
+        s.zoomSpeed = 0.4
+        c.scrollSettings = s
+        XCTAssertEqual(c.scrollMode, .smoothStep)
+        XCTAssertEqual(c.scrollSpeed, 1.2, accuracy: 1e-9)
+        XCTAssertTrue(c.reverseScrollHorizontal)
+        XCTAssertEqual(c.zoomSpeed, 0.4, accuracy: 1e-9)
+        XCTAssertEqual(c.scrollSettings, s)
+    }
+
+    func testDeviceProfilesRoundTrip() throws {
+        var c = AppConfig()
+        var s = ScrollDeviceSettings()
+        s.scrollMode = .standard
+        s.reverseScroll = true
+        c.deviceProfiles = [DeviceProfile(id: "046d:b034", name: "MX Master 3S", settings: s)]
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(c))
+        XCTAssertEqual(decoded.deviceProfiles, c.deviceProfiles)
+        XCTAssertTrue(try JSONDecoder().decode(AppConfig.self, from: Data("{}".utf8)).deviceProfiles.isEmpty)
+    }
+
+    /// A broken profile is dropped alone, duplicates keep the first, and values are clamped.
+    func testDeviceProfilesDecodeTolerantly() throws {
+        let json = #"""
+        {"deviceProfiles":[
+          {"id":"1:1","name":"A","settings":{"scrollSpeed":99,"scrollMode":"bogus"}},
+          {"name":"missing id"},
+          {"id":"1:1","name":"dup","settings":{}}
+        ]}
+        """#
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.deviceProfiles.count, 1)
+        XCTAssertEqual(decoded.deviceProfiles[0].name, "A")
+        XCTAssertEqual(decoded.deviceProfiles[0].settings.scrollSpeed, 1.5, accuracy: 1e-9)
+        XCTAssertEqual(decoded.deviceProfiles[0].settings.scrollMode, .smooth)
+    }
+}

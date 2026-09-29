@@ -4,20 +4,25 @@ import QuartzCore
 import os
 
 /// Synthesizes trackpad pinch-zoom (magnification) gestures from Cmd+scroll-wheel ticks — a real
-/// pinch, so it zooms anything a trackpad pinch zooms (browsers, Preview, Maps…), unlike Cmd+"+"
-/// key presses.
+/// pinch, so it zooms anything a trackpad pinch zooms (browsers, Preview, Maps, Figma…), unlike
+/// Cmd+"+" key presses.
 ///
-/// Stream shape: the first tick opens the gesture (began carries its delta), further ticks are
-/// `changed`, and the gesture closes with an empty `ended` after the wheel has been quiet for
+/// Smoothing: a wheel notch is one big magnification step (~7.5 %), which canvas apps (Figma,
+/// Sketch, Maps) render as a visible JUMP per click. Real pinches arrive as a dense stream of tiny
+/// deltas, so instead of posting a notch at once we queue it and drain it over a short
+/// exponential ease (`tau`) from a 120 Hz timer — the total zoom per notch is unchanged, it just
+/// glides. A reversed notch drops the queued remainder so direction flips stay immediate.
+///
+/// Stream shape: the first drained frame opens the gesture (began carries its delta; Chromium
+/// gets an empty began + front-loaded changed, see `feed`), later frames are `changed`, and the
+/// gesture closes with an empty `ended` once the queue is empty and the wheel has been quiet for
 /// `endTimeout` (we can't see the Cmd key-up — the tap only listens to mouse events).
 ///
-/// Threading: `feed` runs on the event-tap thread; the end-timeout fires on the main queue.
-/// State is guarded by `lock`, and every phase event is POSTED while still holding it: deciding
-/// under the lock but posting outside left a window where the main queue's `ended` (decided after
-/// 0.25 s of silence) could land AFTER the `began` of a fresh tick that slipped in between —
-/// closing the new gesture instantly and orphaning its `changed` events. Posting under the lock
-/// makes the emitted stream order match the state transitions. CGEventPost is thread-safe and
-/// takes microseconds, so holding the lock across it is harmless.
+/// Threading: `feed` runs on the event-tap thread; the drain timer fires on `animQueue`. State is
+/// guarded by `lock`, and every phase event is POSTED while still holding it, so the emitted
+/// stream order always matches the state transitions (a `began` can never be overtaken by the
+/// `ended` of the previous gesture). CGEventPost is thread-safe and takes microseconds, so holding
+/// the lock across it is harmless.
 final class MagnifySynthesizer {
 
     /// Field-based gesture synthesis works through macOS 26; macOS 27 stops reading these fields
@@ -33,10 +38,21 @@ final class MagnifySynthesizer {
     // Unfair lock (not NSLock): `feed` runs per zoom event on the tap thread — hundreds per
     // second on a free-spin flick. Not recursive; posting under it stays a few microseconds.
     private let lock = OSAllocatedUnfairLock()
-    private var active = false
-    private let endTimeout = 0.25       // s of wheel silence before the pinch ends
+    private var active = false          // a began has been posted and no ended yet
+    private var pending = 0.0           // magnification queued but not yet posted
+    private var boostOnOpen = false     // open the next gesture Chromium-style (see `feed`)
+    private let endTimeout = 0.25       // s of wheel silence (with nothing queued) before ending
     private var lastFeed = 0.0          // CACurrentMediaTime of the most recent tick
-    private var endScheduled = false    // an end-check is already in flight — don't queue another
+    private var lastFrame = 0.0         // previous drain frame, for a frame-rate-independent ease
+    private var timer: DispatchSourceTimer?  // non-nil while a gesture is queued or open
+
+    private let tau = 0.045             // s — ease time constant; ~95 % of a notch lands in 0.13 s
+    private let flushEpsilon = 0.0005   // queued magnification below this is posted in one go
+    private let maxPending = 1.5        // bound the queue so a hard flick can't zoom on for long
+    private let frameInterval = DispatchTimeInterval.nanoseconds(8_333_333) // 120 Hz
+
+    /// Drain timer queue. Separate from the tap thread so smoothing never delays input handling.
+    private let animQueue = DispatchQueue(label: "com.mousse.magnify", qos: .userInteractive)
 
     private let phaseBegan: Int64 = 1   // IOHIDEventPhaseBits
     private let phaseChanged: Int64 = 2
@@ -47,7 +63,7 @@ final class MagnifySynthesizer {
     /// Chromium browser — they swallow small pinch deltas, so the gesture opens with a big first
     /// step to feel responsive (a long-standing upstream workaround).
     func feed(magnification: Double, chromiumBoost: Bool) {
-        guard magnification != 0 else { return }
+        guard magnification != 0, magnification.isFinite else { return }
 
         guard MagnifySynthesizer.pinchSupported else {
             // macOS 27+: quantize the tick stream into whole, rate-limited zoom steps (Cmd+= in,
@@ -58,66 +74,73 @@ final class MagnifySynthesizer {
             return
         }
 
+        let now = CACurrentMediaTime()
         lock.lock()
-        let opening = !active
-        active = true
-        lastFeed = CACurrentMediaTime()
-        let needsCheck = !endScheduled
-        endScheduled = true
-        var delta = magnification
-        if opening {
-            if chromiumBoost {
-                // Chromium needs a pile of deltas before it starts zooming; front-load them.
-                post(phase: phaseBegan, magnification: 0)
-                delta += delta > 0 ? 380.0 / 800.0 : -250.0 / 800.0
-                post(phase: phaseChanged, magnification: delta)
-            } else {
-                post(phase: phaseBegan, magnification: delta)
-            }
-        } else {
-            post(phase: phaseChanged, magnification: delta)
+        // Direction flip: drop what is still queued the old way so the reversal is immediate.
+        if pending != 0, (pending > 0) != (magnification > 0) { pending = 0 }
+        pending = min(max(pending + magnification, -maxPending), maxPending)
+        lastFeed = now
+        if !active { boostOnOpen = chromiumBoost }
+        var started: DispatchSourceTimer?
+        if timer == nil {
+            let t = DispatchSource.makeTimerSource(queue: animQueue)
+            t.schedule(deadline: .now(), repeating: frameInterval, leeway: .milliseconds(1))
+            t.setEventHandler { [weak self] in self?.frame() }
+            timer = t
+            lastFrame = now
+            started = t
         }
         lock.unlock()
-
-        // Arm the end-of-gesture check ONCE per gesture. Re-arming per tick queued one main-queue
-        // timer for every event — and a Cmd+scroll flick on a free-spin or high-res mouse is
-        // hundreds of events a second, so hundreds of 0.25 s blocks would be in flight at a time.
-        // Instead a single check reschedules itself for whatever silence is still owed.
-        if needsCheck { scheduleEndCheck(after: endTimeout) }
+        started?.resume() // outside the lock: the first frame may fire immediately
     }
 
-    /// Main-queue check: end the pinch once the wheel has been quiet for `endTimeout`, otherwise
-    /// re-arm for the remaining silence. Exactly one of these is ever in flight (`endScheduled`).
-    private func scheduleEndCheck(after delay: Double) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            self.lock.lock()
-            // `endNow` (or a teardown) already closed the gesture — nothing owed.
-            guard self.active else {
-                self.endScheduled = false
-                self.lock.unlock()
-                return
+    /// One drain frame (on `animQueue`): post the eased share of the queue, or end the gesture
+    /// once nothing is queued and the wheel has been quiet for `endTimeout`.
+    private func frame() {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = CACurrentMediaTime()
+        let dt = min(max(now - lastFrame, 0), 0.05)
+        lastFrame = now
+
+        if pending != 0 {
+            var d = pending * (1 - exp(-dt / tau))
+            if abs(pending - d) < flushEpsilon { d = pending }
+            guard d != 0 else { return }
+            pending -= d
+            if !active {
+                active = true
+                if boostOnOpen {
+                    // Chromium needs a pile of deltas before it starts zooming; front-load them.
+                    post(phase: phaseBegan, magnification: 0)
+                    post(phase: phaseChanged,
+                         magnification: d + (d > 0 ? 380.0 / 800.0 : -250.0 / 800.0))
+                } else {
+                    post(phase: phaseBegan, magnification: d)
+                }
+            } else {
+                post(phase: phaseChanged, magnification: d)
             }
-            let quiet = CACurrentMediaTime() - self.lastFeed
-            guard quiet >= self.endTimeout else {
-                self.lock.unlock()
-                self.scheduleEndCheck(after: self.endTimeout - quiet) // still ticking — wait it out
-                return
-            }
-            self.active = false
-            self.endScheduled = false
-            self.post(phase: self.phaseEnded, magnification: 0) // under lock — see class comment
-            self.lock.unlock()
+            return
         }
+
+        // Queue empty: keep the gesture open through short pauses between notches (one pinch,
+        // not began/ended churn), then close it and stop the timer.
+        guard now - lastFeed >= endTimeout else { return }
+        if active { post(phase: phaseEnded, magnification: 0) } // under lock — see class comment
+        active = false
+        timer?.cancel()
+        timer = nil
     }
 
-    /// Close any open pinch immediately (wake/space-switch teardowns). Any in-flight end-check
-    /// sees `active == false` and retires itself.
+    /// Close any open pinch immediately (wake/space-switch teardowns) and drop whatever is queued.
     func endNow() {
         lock.lock()
-        let wasActive = active
+        pending = 0
+        if active { post(phase: phaseEnded, magnification: 0) } // under lock — see class comment
         active = false
-        if wasActive { post(phase: phaseEnded, magnification: 0) } // under lock — see class comment
+        timer?.cancel()
+        timer = nil
         lock.unlock()
     }
 

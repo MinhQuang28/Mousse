@@ -184,7 +184,7 @@ struct TickAnalyzer {
         swipes = 0
         ticksInSequence = 0
         sequenceStartTime = 0
-        gapWindow.removeAll()
+        gapWindow.removeAll(keepingCapacity: true)
     }
 
     /// `direction`: any stable key that changes on axis or sign flips (e.g. ±1 / ±2).
@@ -215,7 +215,7 @@ struct TickAnalyzer {
                 ticksInSequence = 0
             }
             consecutiveTicks = 0
-            gapWindow.removeAll()
+            gapWindow.removeAll(keepingCapacity: true)
         } else {
             consecutiveTicks += 1
             gapWindow.append(rawGap)
