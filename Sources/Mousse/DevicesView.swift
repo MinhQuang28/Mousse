@@ -19,14 +19,17 @@ struct DevicesView: View {
 
     var body: some View {
         Form {
-            if !InputMonitoringPermission.isTrusted {
-                Section {
-                    Label("Per-device settings need Input Monitoring to tell your mice apart. Until it is granted, every mouse uses the global Scroll settings.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.callout)
-                    Button("Grant Input Monitoring…") {
-                        if !InputMonitoringPermission.request() { InputMonitoringPermission.openSettings() }
+            // Re-read every 2 s so the warning clears once the grant lands (no relaunch needed).
+            TimelineView(.periodic(from: .now, by: 2)) { _ in
+                if !InputMonitoringPermission.isTrusted {
+                    Section {
+                        Label("Per-device settings need Input Monitoring to tell your mice apart. Until it is granted, every mouse uses the global Scroll settings.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .font(.callout)
+                        Button("Grant Input Monitoring…") {
+                            if !InputMonitoringPermission.request() { InputMonitoringPermission.openSettings() }
+                        }
                     }
                 }
             }
@@ -43,7 +46,8 @@ struct DevicesView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-        .onAppear { tracker.start() } // lists connected mice; idempotent
+        .onAppear { tracker.setTabOpen(true) } // lists connected mice even without a profile
+        .onDisappear { tracker.setTabOpen(false) }
     }
 
     @ViewBuilder

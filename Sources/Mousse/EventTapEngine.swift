@@ -348,10 +348,9 @@ final class EventTapEngine {
         scrollByDevice = Dictionary(config.deviceProfiles.map { ($0.id, $0.settings) },
                                     uniquingKeysWith: { first, _ in first })
         // HID tracking only runs once someone uses per-device profiles (or opens the Devices
-        // tab) — no extra listener, and no Input Monitoring prompt, for everyone else.
-        if !config.deviceProfiles.isEmpty {
-            DispatchQueue.main.async { DeviceTracker.shared.start() }
-        }
+        // tab), and stops again once neither holds — no extra listener for everyone else.
+        let hasProfiles = !config.deviceProfiles.isEmpty
+        DispatchQueue.main.async { DeviceTracker.shared.setHasProfiles(hasProfiles) }
         spaceDragButton = config.spaceDragButton
         spaceDragThreshold = config.spaceDragThreshold
         spaceDragReverse = config.spaceDragReverse
@@ -469,7 +468,8 @@ final class EventTapEngine {
         }
         let maps = mappingsByButton
         var sc = globalScroll
-        let byDevice = scrollByDevice
+        // Only scroll events read profiles; skip the retain/release for moves and clicks.
+        let byDevice = type == .scrollWheel ? scrollByDevice : [:]
         let excluded = excludedBundleIDs
         let vToH = verticalToHorizontalBundleIDs
         let dragCancel = pendingDragCancel
