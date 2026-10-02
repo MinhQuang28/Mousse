@@ -23,6 +23,14 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(decoded.mappings.count, AppConfig.defaultMappings.count)
     }
 
+    func testNativeScrollModeRoundTrips() throws {
+        var config = AppConfig()
+        config.scrollMode = .native
+        XCTAssertEqual(try roundTrip(config).scrollMode, .native)
+        let raw = #"{"scrollMode":"native"}"#.data(using: .utf8)!
+        XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: raw).scrollMode, .native)
+    }
+
     func testNonDefaultValuesPersist() throws {
         var config = AppConfig()
         config.enabled = false
@@ -86,9 +94,16 @@ final class AppConfigTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: legacy).scrollMode, .smooth)
     }
 
-    func testLegacySmoothScrollFalseMapsToStandard() throws {
+    func testLegacySmoothScrollFalseMapsToNative() throws {
         let legacy = #"{"smoothScroll":false}"#.data(using: .utf8)!
-        XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: legacy).scrollMode, .standard)
+        XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: legacy).scrollMode, .native)
+    }
+
+    /// The removed Standard mode migrates to Native, globally and in device profiles.
+    func testRemovedStandardModeMapsToNative() throws {
+        let raw = #"{"scrollMode":"standard"}"#.data(using: .utf8)!
+        XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: raw).scrollMode, .native)
+        XCTAssertEqual(try JSONDecoder().decode(ScrollMode.self, from: Data(#""standard""#.utf8)), .native)
     }
 
     /// A present `scrollMode` wins over the legacy bool when both appear.
@@ -211,7 +226,7 @@ extension AppConfigTests {
     func testDeviceProfilesRoundTrip() throws {
         var c = AppConfig()
         var s = ScrollDeviceSettings()
-        s.scrollMode = .standard
+        s.scrollMode = .native
         s.reverseScroll = true
         c.deviceProfiles = [DeviceProfile(id: "046d:b034", name: "MX Master 3S", settings: s)]
         let decoded = try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(c))

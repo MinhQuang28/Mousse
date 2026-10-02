@@ -9,11 +9,11 @@ or any system configuration changes.
 
 ### Scroll
 
-- **Three styles** — _Standard_ (instant wheel, no animation), _Smooth_ (trackpad-style eased
-  momentum), and _Smooth-step_ (Windows-browser feel: each notch eases a fixed number of lines
+- **Three styles** — _Native_ (macOS's own scrolling, only the direction reversed), _Smooth_ (trackpad-style eased
+  momentum), and _Windows_ (Windows-browser feel: each notch eases a fixed number of lines
   with no coast).
-- **Adjustable speed** — wheel sensitivity in Smooth; in every style it also scales
-  high-resolution (continuous) mice — and **lines-per-notch** (Smooth-step).
+- **Adjustable speed** — wheel sensitivity in Smooth; in Smooth and Windows it also scales
+  high-resolution (continuous) mice — and **lines-per-notch** (Windows).
 - **Independent zoom speed** — ⌘ + wheel pinch-zoom sensitivity (0.2×–6×) is decoupled from
   scroll speed, so design tools like Figma can zoom finely while pages still scroll fast.
 - **Reverse direction** independent of the system setting, separately for vertical and

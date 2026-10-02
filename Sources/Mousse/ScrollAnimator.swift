@@ -210,6 +210,32 @@ final class ScrollAnimator: NSObject {
         planRate = 1
     }
 
+    /// The stream a teardown would orphan. An interrupted coast whose momentum-ended hasn't been
+    /// posted yet (momentumInterrupted pending, mode already flipped back to .gesture by the tick)
+    /// still counts as an open momentum stream. Caller must hold `lock`.
+    private func openStreamLocked() -> Stream {
+        momentumInterrupted ? .momentum : (phaseStarted ? mode : .idle)
+    }
+
+    /// Stop the glide and forget all motion, plan and stream state. Caller must hold `lock`.
+    private func resetGlideLocked() {
+        running = false
+        mode = .idle
+        phaseStarted = false
+        momentumInterrupted = false
+        remV = 0; remH = 0; carryV = 0; carryH = 0; velV = 0; velH = 0
+        clearPlanLocked()
+    }
+
+    /// Post the closing frame of `stream` (link thread only, like `post`).
+    private func postStreamEnd(_ stream: Stream) {
+        if stream == .momentum {
+            post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: 0, momentumPhase: momentumEnded)
+        } else {
+            post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: phaseEnded)
+        }
+    }
+
     /// Feed a wheel notch (line deltas, already direction-corrected). In Smooth-step mode each notch
     /// is a fixed `lines`-line spring step with a crisp ease and no coast; in Smooth mode the notch
     /// re-plans an  hybrid glide. The caller resolves `profile` (smoothness setting or a held
@@ -398,18 +424,11 @@ final class ScrollAnimator: NSObject {
     func endGestureNow() {
         lock.lock()
         let rl = linkRunLoop
-        // Which stream (if any) needs closing. An interrupted coast whose momentum-ended hasn't been
-        // posted yet (momentumInterrupted pending, mode already flipped back to .gesture by the tick)
-        // still counts as an open momentum stream — dropping it would leave the app's momentum
-        // sequence unterminated.
-        let openStream = momentumInterrupted ? Stream.momentum : (phaseStarted ? mode : Stream.idle)
-        running = false
-        mode = .idle
-        phaseStarted = false
-        momentumInterrupted = false
-        remV = 0; remH = 0; carryV = 0; carryH = 0; velV = 0; velH = 0
+        // Which stream (if any) needs closing — dropping it would leave the app's sequence
+        // unterminated.
+        let openStream = openStreamLocked()
+        resetGlideLocked()
         phaselessStream = false
-        clearPlanLocked()
         tickAnalyzer.reset()
         lock.unlock()
 
@@ -432,14 +451,7 @@ final class ScrollAnimator: NSObject {
             let stillIdle = !self.running
             let link = self.displayLink // read under lock (handleWake/runLoop write it)
             self.lock.unlock()
-            if !newStreamBegan {
-                if openStream == .momentum {
-                    self.post(intV: 0, intH: 0, preciseV: 0, preciseH: 0,
-                              gesturePhase: 0, momentumPhase: self.momentumEnded)
-                } else {
-                    self.post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: self.phaseEnded)
-                }
-            }
+            if !newStreamBegan { self.postStreamEnd(openStream) }
             if stillIdle { link?.isPaused = true }
         }
         CFRunLoopWakeUp(rl)
@@ -547,19 +559,14 @@ final class ScrollAnimator: NSObject {
         let link = displayLink
         // Same open-stream logic as endGestureNow: close whatever the teardown orphans, so the
         // frontmost app doesn't carry an unterminated gesture/momentum sequence across the nap.
-        let openStream = momentumInterrupted ? Stream.momentum : (phaseStarted ? mode : Stream.idle)
+        let openStream = openStreamLocked()
         displayLink = nil
         linkRunLoop = nil
         thread = nil
         linkDisplayID = 0
-        running = false
-        remV = 0; remH = 0; carryV = 0; carryH = 0; velV = 0; velH = 0
+        resetGlideLocked()
         phaselessStream = false
-        clearPlanLocked()
         tickAnalyzer.reset()
-        mode = .idle
-        phaseStarted = false
-        momentumInterrupted = false
         stallRetries = 0
         lock.unlock()
 
@@ -569,14 +576,7 @@ final class ScrollAnimator: NSObject {
         // stays single-threaded (link thread only). Best-effort: if the loop already stopped, the
         // block never runs and the stream stays unterminated, which apps tolerate (LOW, cosmetic).
         CFRunLoopPerformBlock(rl, CFRunLoopMode.commonModes.rawValue) { [weak self] in
-            if let self, openStream != .idle {
-                if openStream == .momentum {
-                    self.post(intV: 0, intH: 0, preciseV: 0, preciseH: 0,
-                              gesturePhase: 0, momentumPhase: self.momentumEnded)
-                } else {
-                    self.post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: self.phaseEnded)
-                }
-            }
+            if let self, openStream != .idle { self.postStreamEnd(openStream) }
             link?.invalidate()
             CFRunLoopStop(rl)
         }
@@ -606,10 +606,8 @@ final class ScrollAnimator: NSObject {
             // instead of leaving smooth scroll permanently dead.
             lock.lock()
             if thread === Thread.current { // don't clobber a replacement spawned after a rebuild
-                thread = nil; running = false
-                remV = 0; remH = 0; velV = 0; velH = 0; carryV = 0; carryH = 0
-                clearPlanLocked()
-                mode = .idle; phaseStarted = false; momentumInterrupted = false
+                thread = nil
+                resetGlideLocked()
                 stallRetries = 0
             }
             lock.unlock()
@@ -769,22 +767,11 @@ final class ScrollAnimator: NSObject {
         if finish { running = false; mode = .idle; phaseStarted = false }
         lock.unlock()
 
-        if closeMomentum {
-            post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: 0, momentumPhase: momentumEnded)
-        }
-        if closeGesture {
-            post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: phaseEnded)
-        }
+        if closeMomentum { postStreamEnd(.momentum) }
+        if closeGesture { postStreamEnd(.gesture) }
         if finish {
             // Close whichever stream was open so the app finalizes it cleanly.
-            if hadBegun {
-                if emitStream == .momentum {
-                    post(intV: 0, intH: 0, preciseV: 0, preciseH: 0,
-                         gesturePhase: 0, momentumPhase: momentumEnded)
-                } else {
-                    post(intV: 0, intH: 0, preciseV: 0, preciseH: 0, gesturePhase: phaseEnded)
-                }
-            }
+            if hadBegun { postStreamEnd(emitStream) }
             link.isPaused = true // pause (not tear down) → zero CPU until the next tick
         } else if willEmit {
             if phaseless {
@@ -845,21 +832,34 @@ final class ScrollAnimator: NSObject {
         // the device's, so terminals jump the same few lines the wheel actually turned.
         // Write order still matters: line first, then fixed-point, then point (the line setter
         // re-syncs the other two views).
-        lineCarryV += preciseV / lineUnit
-        lineCarryH += preciseH / lineUnit
-        let lv = lineCarryV.rounded(.towardZero); lineCarryV -= lv
-        let lh = lineCarryH.rounded(.towardZero); lineCarryH -= lh
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: Int64(lv))
-        event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: Int64(lh))
-        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: preciseV / lineUnit)
-        event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: preciseH / lineUnit)
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(intV))
-        event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(intH))
+        event.writeScrollDeltas(linesV: preciseV / lineUnit, linesH: preciseH / lineUnit,
+                                pointV: intV, pointH: intH, carryV: &lineCarryV, carryH: &lineCarryH)
         // Stamp the phases so phase-aware apps (Safari) render a coherent gesture + coast, not jumps.
         // At most one of the two is nonzero at a time — a real trackpad stream looks the same.
         event.setIntegerValueField(scrollPhaseField, value: gesturePhase)
         event.setIntegerValueField(momentumPhaseField, value: momentumPhase)
         event.setIntegerValueField(.eventSourceUserData, value: ScrollAnimator.syntheticTag)
         event.post(tap: .cghidEventTap)
+    }
+}
+
+extension CGEvent {
+    /// Write one frame's scroll deltas, shared by the animator and the hi-res repost (field
+    /// semantics: see `ScrollAnimator.post`). `linesV`/`linesH` are precise fractional LINES;
+    /// their whole part accumulates in `carryV`/`carryH` into the integer line field. Order is
+    /// load-bearing: line first, then fixed-point, then point — the line setter re-syncs the
+    /// other two views to the whole-line value.
+    func writeScrollDeltas(linesV: Double, linesH: Double, pointV: Int32, pointH: Int32,
+                           carryV: inout Double, carryH: inout Double) {
+        carryV += linesV
+        carryH += linesH
+        let lv = carryV.rounded(.towardZero); carryV -= lv
+        let lh = carryH.rounded(.towardZero); carryH -= lh
+        setIntegerValueField(.scrollWheelEventDeltaAxis1, value: Int64(lv))
+        setIntegerValueField(.scrollWheelEventDeltaAxis2, value: Int64(lh))
+        setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: linesV)
+        setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: linesH)
+        setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(pointV))
+        setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(pointH))
     }
 }

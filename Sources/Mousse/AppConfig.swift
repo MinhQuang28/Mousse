@@ -2,16 +2,26 @@ import Foundation
 
 /// How the mouse wheel scrolls.
 enum ScrollMode: String, Codable, Sendable, CaseIterable {
-    case standard    // OS stepped wheel — raw passthrough; each notch jumps instantly
+    case native      // macOS scrolling untouched — only reverse, edited in place on the original
     case smooth      // trackpad-style eased momentum
     case smoothStep  // Windows-browser style: each notch eases a fixed N-line step, no coast
 
     var label: String {
         switch self {
-        case .standard:   return "Standard (instant)"
-        case .smooth:     return "Smooth (trackpad)"
-        case .smoothStep: return "Smooth-step (Windows)"
+        case .native:     return "Native"
+        case .smooth:     return "Smooth"
+        case .smoothStep: return "Windows"
         }
+    }
+
+    /// The removed `standard` mode (raw passthrough + reposted reverse) lives on as `native`.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        guard let mode = raw == "standard" ? .native : ScrollMode(rawValue: raw) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Unknown scroll mode \(raw)"))
+        }
+        self = mode
     }
 }
 
@@ -197,7 +207,7 @@ extension AppConfig {
         if let mode = field(ScrollMode.self, .scrollMode) {
             scrollMode = mode
         } else if let legacy = field(Bool.self, .smoothScroll) {
-            scrollMode = legacy ? .smooth : .standard
+            scrollMode = legacy ? .smooth : .native
         }
         scrollSmoothness   = field(ScrollSmoothness.self, .scrollSmoothness) ?? scrollSmoothness
         scrollSpeed        = field(Double.self, .scrollSpeed)        ?? scrollSpeed

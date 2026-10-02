@@ -105,14 +105,15 @@ struct SettingsView: View {
                 Text("Mice with their own profile (Devices tab) ignore these settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Modifier keys while scrolling") {
-                Text("⇧ Shift — scroll horizontally (swaps the axes)\n⌥ Option — precise: a few pixels per notch for fine control\n⌃ Control — quick: about half a window per notch, long glide\n⌘ Command — zoom: a real trackpad pinch (browsers, Preview, Maps…)")
-                    .font(.caption)
-            }
-            if store.config.scrollMode != .standard || !store.config.deviceProfiles.isEmpty {
+            // Native ignores modifiers and per-app rules — only show them when some mouse can use them.
+            if store.config.scrollMode != .native || !store.config.deviceProfiles.isEmpty {
+                Section("Modifier keys while scrolling") {
+                    Text("⇧ Shift — scroll horizontally (swaps the axes)\n⌥ Option — precise: a few pixels per notch for fine control\n⌃ Control — quick: about half a window per notch, long glide\n⌘ Command — zoom: a real trackpad pinch (browsers, Preview, Maps…)")
+                        .font(.caption)
+                }
                 ExcludedAppsView()
+                TransposedAppsView()
             }
-            TransposedAppsView() // axis-swap works in every scroll mode, including Standard
         }
         .formStyle(.grouped)
     }
