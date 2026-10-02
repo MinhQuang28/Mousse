@@ -22,7 +22,7 @@ fi
 
 APP_NAME="Mousse"
 BUNDLE_ID="com.mousse.app"
-VERSION="0.10.0"
+VERSION="0.11.0"
 OUT="build/${APP_NAME}.app"
 
 echo "==> swift build -c release"
