@@ -1,0 +1,1 @@
+- [Build toolchain](project-build-toolchain.md) — macOS 27 needs Xcode-beta DEVELOPER_DIR for `swift test`; ScrollMath.swift sims standalone

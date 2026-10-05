@@ -1,0 +1,1 @@
+- [Mousse Logitech test hardware](project-mousse-logitech-hardware.md) — MX Master 3S over BLE, no receiver; DPI target CID is 0x00C4; receiver path untestable here.
